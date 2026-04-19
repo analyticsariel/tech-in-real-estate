@@ -1,0 +1,773 @@
+# FRED Series Catalog for TiRE
+# =============================================================================
+# Persistent reference of FRED data series relevant to real estate investing.
+# Single source of truth for:
+#   - the site-wide ticker (filter: ticker_candidate: true)
+#   - agent research briefs (load by category or key)
+#   - future notebook pipelines & data posts
+#
+# This catalog is the metadata layer. Current values live elsewhere
+# (site/data/ticker.yaml once the Sprint 2 refresh pipeline ships).
+#
+# -----------------------------------------------------------------------------
+# Schema per entry:
+#   key:                 slug we own; stable across any FRED ID rename
+#   label:               short, ticker-friendly display name
+#   full_title:          FRED's published series title
+#   series_id:           FRED series ID (the arg you pass to fredapi / REST)
+#   source:              primary publisher of the underlying data
+#   url:                 FRED landing page
+#   frequency:           daily | weekly | monthly | quarterly | annual
+#   release_day:         weekday or day-of-month, when it matters
+#   units:               percent | dollars | index | thousands | millions | ratio | days | count
+#   seasonally_adjusted: true | false
+#   category:            rates_financing | prices | affordability | supply |
+#                        demand | rental_market | macro_labor | inflation |
+#                        credit_stress
+#   why_it_matters:      one-line TiRE-voice rationale — agents read this
+#   ticker_candidate:    whether this belongs on the front-page ticker
+#   ticker_order:        when ticker_candidate is true, 1-based slot position
+#                        on the marquee (1 = first shown). Absent when
+#                        ticker_candidate is false. 10 slots total.
+#   tags:                free-form; used for filtering in future pipelines
+#   notes:               anything weird (history window, naming quirks, caveats)
+#
+# To add a series:
+#   1. Pull the landing page on fred.stlouisfed.org; verify id + frequency + units.
+#   2. Fill every field. No entries without a why_it_matters.
+#   3. Commit in the PR that uses it. Don't pre-add speculative entries.
+# =============================================================================
+
+series:
+
+  # === RATES & FINANCING =====================================================
+
+  - key: mortgage_30y
+    label: 30Y Mortgage
+    full_title: 30-Year Fixed Rate Mortgage Average in the United States
+    series_id: MORTGAGE30US
+    source: Freddie Mac (Primary Mortgage Market Survey)
+    url: https://fred.stlouisfed.org/series/MORTGAGE30US
+    frequency: weekly
+    release_day: Thursday
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Single most-watched number in RE. Every new purchase and refi calc starts here.
+    ticker_candidate: true
+    ticker_order: 1
+    tags: [financing, benchmark, leading]
+    notes:
+
+  - key: mortgage_15y
+    label: 15Y Mortgage
+    full_title: 15-Year Fixed Rate Mortgage Average in the United States
+    series_id: MORTGAGE15US
+    source: Freddie Mac (Primary Mortgage Market Survey)
+    url: https://fred.stlouisfed.org/series/MORTGAGE15US
+    frequency: weekly
+    release_day: Thursday
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Refi math lives here. Spread to 30Y tells you which loan is cheaper.
+    ticker_candidate: false
+    tags: [financing, refi]
+    notes:
+
+  - key: treasury_10y
+    label: 10Y Treasury
+    full_title: Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity
+    series_id: DGS10
+    source: Board of Governors of the Federal Reserve System (H.15)
+    url: https://fred.stlouisfed.org/series/DGS10
+    frequency: daily
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Leads mortgage rates by days to weeks. If this moves, MORTGAGE30US follows.
+    ticker_candidate: true
+    ticker_order: 2
+    tags: [financing, benchmark, leading]
+    notes:
+
+  - key: treasury_2y
+    label: 2Y Treasury
+    full_title: Market Yield on U.S. Treasury Securities at 2-Year Constant Maturity
+    series_id: DGS2
+    source: Board of Governors of the Federal Reserve System (H.15)
+    url: https://fred.stlouisfed.org/series/DGS2
+    frequency: daily
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Short end of the curve. Pair with DGS10 to read curve shape and recession signal.
+    ticker_candidate: false
+    tags: [financing, macro]
+    notes:
+
+  - key: fed_funds_daily
+    label: Fed Funds (Daily)
+    full_title: Federal Funds Effective Rate
+    series_id: DFF
+    source: Board of Governors of the Federal Reserve System (H.15)
+    url: https://fred.stlouisfed.org/series/DFF
+    frequency: daily
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Daily read on the Fed's policy rate. Use when timeliness matters.
+    ticker_candidate: false
+    tags: [financing, policy]
+    notes: Monthly-average version is FEDFUNDS; pick based on whether you want daily or monthly granularity.
+
+  - key: fed_funds_monthly
+    label: Fed Funds Rate
+    full_title: Federal Funds Effective Rate (Monthly)
+    series_id: FEDFUNDS
+    source: Board of Governors of the Federal Reserve System (H.15)
+    url: https://fred.stlouisfed.org/series/FEDFUNDS
+    frequency: monthly
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: Policy anchor. Sets the direction for every other rate in the stack.
+    ticker_candidate: false
+    tags: [financing, policy]
+    notes:
+
+  - key: prime_rate
+    label: Prime Rate
+    full_title: Bank Prime Loan Rate
+    series_id: DPRIME
+    source: Board of Governors of the Federal Reserve System (H.15)
+    url: https://fred.stlouisfed.org/series/DPRIME
+    frequency: daily
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rates_financing
+    why_it_matters: HELOC and bank loan pricing hinges on prime. Moves in lockstep with Fed funds + 300bps.
+    ticker_candidate: false
+    tags: [financing, heloc]
+    notes:
+
+  # === PRICES ================================================================
+
+  - key: median_home_price_existing
+    label: Median Home Price
+    full_title: Median Sales Price of Existing Homes
+    series_id: HOSMEDUSM052N
+    source: National Association of Realtors
+    url: https://fred.stlouisfed.org/series/HOSMEDUSM052N
+    frequency: monthly
+    release_day:
+    units: dollars
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: The headline "market" number every news anchor cites. Sets the mental anchor buyers and sellers walk into every negotiation with — worth tracking even when your local comps have drifted from the national trend.
+    ticker_candidate: true
+    ticker_order: 4
+    tags: [prices, headline]
+    notes:
+
+  - key: median_home_price_sf
+    label: Median SF Home Price
+    full_title: Median Sales Price of Existing Single-Family Homes
+    series_id: HSFMEDUSM052N
+    source: National Association of Realtors
+    url: https://fred.stlouisfed.org/series/HSFMEDUSM052N
+    frequency: monthly
+    release_day:
+    units: dollars
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: Single-family only — cleaner read for SFR investors than the all-types median.
+    ticker_candidate: false
+    tags: [prices, sfr]
+    notes:
+
+  - key: median_new_home_price
+    label: Median New Home Price
+    full_title: Median Sales Price for New Houses Sold in the United States
+    series_id: MSPNHSUS
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/MSPNHSUS
+    frequency: monthly
+    release_day:
+    units: dollars
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: New construction pricing. Diverges from existing-home median in supply-constrained cycles.
+    ticker_candidate: false
+    tags: [prices, new_construction]
+    notes:
+
+  - key: median_listing_price
+    label: Median Listing Price
+    full_title: Housing Inventory - Median Listing Price in the United States
+    series_id: MEDLISPRIUS
+    source: Realtor.com
+    url: https://fred.stlouisfed.org/series/MEDLISPRIUS
+    frequency: monthly
+    release_day:
+    units: dollars
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: What sellers ask for, not what clears. Gap vs. sold price reveals buyer leverage.
+    ticker_candidate: false
+    tags: [prices, leading]
+    notes:
+
+  - key: case_shiller_national
+    label: Case-Shiller National
+    full_title: S&P CoreLogic Case-Shiller U.S. National Home Price Index
+    series_id: CSUSHPINSA
+    source: S&P Dow Jones Indices LLC
+    url: https://fred.stlouisfed.org/series/CSUSHPINSA
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: National price trajectory. Says whether "prices are flat/falling/rising" is actually true.
+    ticker_candidate: false
+    tags: [prices, benchmark]
+    notes: Released with ~2-month lag. Indexed to Jan 2000 = 100.
+
+  - key: case_shiller_20
+    label: Case-Shiller 20
+    full_title: S&P CoreLogic Case-Shiller 20-City Composite Home Price Index
+    series_id: SPCS20RSA
+    source: S&P Dow Jones Indices LLC
+    url: https://fred.stlouisfed.org/series/SPCS20RSA
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: prices
+    why_it_matters: 20 largest metros, weighted by market size. More sensitive than the national series.
+    ticker_candidate: false
+    tags: [prices, metro]
+    notes: Released with ~2-month lag.
+
+  - key: fhfa_hpi
+    label: FHFA House Price Index
+    full_title: All-Transactions House Price Index for the United States
+    series_id: USSTHPI
+    source: Federal Housing Finance Agency
+    url: https://fred.stlouisfed.org/series/USSTHPI
+    frequency: quarterly
+    release_day:
+    units: index
+    seasonally_adjusted: false
+    category: prices
+    why_it_matters: Purchase-only alt to Case-Shiller. When CS and FHFA disagree, something odd is happening.
+    ticker_candidate: false
+    tags: [prices, alt_measure]
+    notes: Based on Fannie/Freddie conforming loans only.
+
+  # === AFFORDABILITY =========================================================
+
+  - key: housing_affordability_index
+    label: Housing Affordability Index
+    full_title: Housing Affordability Index (Fixed)
+    series_id: FIXHAI
+    source: National Association of Realtors
+    url: https://fred.stlouisfed.org/series/FIXHAI
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: false
+    category: affordability
+    why_it_matters: Fuses rates + prices + incomes into one number. 100 = median family can just afford median home.
+    ticker_candidate: true
+    ticker_order: 3
+    tags: [affordability, headline]
+    notes: FRED only retains the trailing 13 months per NAR's data agreement. Pull history elsewhere if needed.
+
+  # === SUPPLY ================================================================
+
+  - key: housing_starts
+    label: Housing Starts
+    full_title: New Privately-Owned Housing Units Started - Total Units
+    series_id: HOUST
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/HOUST
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: Forward supply. Falls → future inventory squeeze → prices and rents firm up.
+    ticker_candidate: true
+    ticker_order: 9
+    tags: [supply, leading]
+    notes: Seasonally adjusted annual rate (SAAR).
+
+  - key: housing_starts_sf
+    label: SF Housing Starts
+    full_title: New Privately-Owned Housing Units Started - Single-Family Units
+    series_id: HOUST1F
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/HOUST1F
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: Isolates SFR pipeline from multi-family noise. The number that matters if you buy houses.
+    ticker_candidate: false
+    tags: [supply, sfr, leading]
+    notes: SAAR.
+
+  - key: building_permits
+    label: Building Permits
+    full_title: New Privately-Owned Housing Units Authorized in Permit-Issuing Places - Total Units
+    series_id: PERMIT
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/PERMIT
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: Earlier than starts. First look at what supply looks like in 6–12 months.
+    ticker_candidate: false
+    tags: [supply, leading]
+    notes: SAAR.
+
+  - key: building_permits_sf
+    label: SF Permits
+    full_title: New Privately-Owned Housing Units Authorized in Permit-Issuing Places - Single-Family Units
+    series_id: PERMIT1
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/PERMIT1
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: Earliest signal of SFR supply pipeline. Builders commit to permits before they break ground.
+    ticker_candidate: false
+    tags: [supply, sfr, leading]
+    notes: SAAR.
+
+  - key: housing_completions
+    label: Housing Completions
+    full_title: New Privately-Owned Housing Units Completed - Total Units
+    series_id: COMPUTSA
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/COMPUTSA
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: When supply actually hits the market. Lags starts by ~6–12 months.
+    ticker_candidate: false
+    tags: [supply, lagging]
+    notes: SAAR.
+
+  - key: months_supply_new
+    label: Months Supply (New)
+    full_title: Monthly Supply of New Houses in the United States
+    series_id: MSACSR
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/MSACSR
+    frequency: monthly
+    release_day:
+    units: ratio
+    seasonally_adjusted: true
+    category: supply
+    why_it_matters: Ratio of new inventory to sales pace. >6 = buyer's market; <4 = seller's.
+    ticker_candidate: true
+    ticker_order: 10
+    tags: [supply, balance]
+    notes:
+
+  - key: active_listings
+    label: Active Listings
+    full_title: Housing Inventory - Active Listing Count in the United States
+    series_id: ACTLISCOUUS
+    source: Realtor.com
+    url: https://fred.stlouisfed.org/series/ACTLISCOUUS
+    frequency: monthly
+    release_day:
+    units: count
+    seasonally_adjusted: false
+    category: supply
+    why_it_matters: Raw count of homes for sale nationally. Direct read on inventory tightness.
+    ticker_candidate: false
+    tags: [supply, inventory]
+    notes: Coverage begins 2016-07.
+
+  # === DEMAND ================================================================
+
+  - key: existing_home_sales
+    label: Existing Home Sales
+    full_title: Existing Home Sales
+    series_id: EXHOSLUSM495S
+    source: National Association of Realtors
+    url: https://fred.stlouisfed.org/series/EXHOSLUSM495S
+    frequency: monthly
+    release_day:
+    units: millions
+    seasonally_adjusted: true
+    category: demand
+    why_it_matters: Liquidity signal. How fast you can close and how motivated sellers are.
+    ticker_candidate: false
+    tags: [demand, activity]
+    notes: SAAR, in units.
+
+  - key: existing_sf_home_sales
+    label: Existing SF Home Sales
+    full_title: Existing Single-Family Home Sales
+    series_id: EXSFHSUSM495S
+    source: National Association of Realtors
+    url: https://fred.stlouisfed.org/series/EXSFHSUSM495S
+    frequency: monthly
+    release_day:
+    units: millions
+    seasonally_adjusted: true
+    category: demand
+    why_it_matters: SFR slice of transaction volume. Use when condos and co-ops would muddy the read.
+    ticker_candidate: false
+    tags: [demand, sfr]
+    notes: SAAR.
+
+  - key: new_home_sales
+    label: New Home Sales
+    full_title: New One Family Houses Sold - United States
+    series_id: HSN1F
+    source: U.S. Census Bureau / HUD
+    url: https://fred.stlouisfed.org/series/HSN1F
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: demand
+    why_it_matters: Demand at the new-construction end. Leads resale price moves.
+    ticker_candidate: false
+    tags: [demand, new_construction, leading]
+    notes: SAAR.
+
+  - key: median_days_on_market
+    label: Median Days on Market
+    full_title: Housing Inventory - Median Days on Market in the United States
+    series_id: MEDDAYONMARUS
+    source: Realtor.com
+    url: https://fred.stlouisfed.org/series/MEDDAYONMARUS
+    frequency: monthly
+    release_day:
+    units: days
+    seasonally_adjusted: false
+    category: demand
+    why_it_matters: Time to sell. Falling = fast market, tight inventory; rising = inventory stacking up.
+    ticker_candidate: true
+    ticker_order: 5
+    tags: [demand, velocity]
+    notes: Coverage begins 2016-07.
+
+  # === RENTAL MARKET =========================================================
+
+  - key: cpi_rent_primary
+    label: CPI Rent Index
+    full_title: CPI for All Urban Consumers - Rent of Primary Residence
+    series_id: CUSR0000SEHA
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/CUSR0000SEHA
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: rental_market
+    why_it_matters: BLS's national rent inflation. Cross-check your local rent raises against this.
+    ticker_candidate: true
+    ticker_order: 6
+    tags: [rent, inflation]
+    notes: Index only — FRED has no clean $-value national median rent. Zillow ZORI is off-FRED.
+
+  - key: cpi_owners_equivalent_rent
+    label: Owners' Equivalent Rent
+    full_title: CPI for All Urban Consumers - Owners' Equivalent Rent of Primary Residence
+    series_id: CUSR0000SEHC01
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/CUSR0000SEHC01
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: rental_market
+    why_it_matters: BLS's imputed rent for owners. Biggest component of core CPI — Fed watches this closely.
+    ticker_candidate: false
+    tags: [rent, inflation, macro]
+    notes:
+
+  - key: rental_vacancy_rate
+    label: Rental Vacancy Rate
+    full_title: Rental Vacancy Rate in the United States
+    series_id: RRVRUSQ156N
+    source: U.S. Census Bureau
+    url: https://fred.stlouisfed.org/series/RRVRUSQ156N
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rental_market
+    why_it_matters: Direct read on rent pricing power. Low vacancy = you can raise rent.
+    ticker_candidate: true
+    ticker_order: 7
+    tags: [rent, vacancy]
+    notes:
+
+  - key: homeowner_vacancy_rate
+    label: Homeowner Vacancy Rate
+    full_title: Homeowner Vacancy Rate in the United States
+    series_id: RHVRUSQ156N
+    source: U.S. Census Bureau
+    url: https://fred.stlouisfed.org/series/RHVRUSQ156N
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rental_market
+    why_it_matters: Empty homes for sale. Rising = price weakness; falling = tight market.
+    ticker_candidate: false
+    tags: [vacancy, inventory]
+    notes:
+
+  - key: homeownership_rate
+    label: Homeownership Rate
+    full_title: Homeownership Rate in the United States
+    series_id: RHORUSQ156N
+    source: U.S. Census Bureau
+    url: https://fred.stlouisfed.org/series/RHORUSQ156N
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: false
+    category: rental_market
+    why_it_matters: Down = more renters. Direction signal for rental demand.
+    ticker_candidate: false
+    tags: [rent, tenure]
+    notes:
+
+  # === MACRO LABOR ===========================================================
+
+  - key: unemployment_rate
+    label: Unemployment Rate
+    full_title: Unemployment Rate
+    series_id: UNRATE
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/UNRATE
+    frequency: monthly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: macro_labor
+    why_it_matters: Tenants without jobs don't pay rent. Leading signal for rent-collection risk.
+    ticker_candidate: true
+    ticker_order: 8
+    tags: [labor, headline]
+    notes:
+
+  - key: nonfarm_payrolls
+    label: Nonfarm Payrolls
+    full_title: All Employees, Total Nonfarm
+    series_id: PAYEMS
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/PAYEMS
+    frequency: monthly
+    release_day:
+    units: thousands
+    seasonally_adjusted: true
+    category: macro_labor
+    why_it_matters: Labor strength. Strong = rent affordability strong = demand intact.
+    ticker_candidate: false
+    tags: [labor, macro]
+    notes:
+
+  - key: employment_population_ratio
+    label: Employment-Pop Ratio
+    full_title: Employment-Population Ratio
+    series_id: EMRATIO
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/EMRATIO
+    frequency: monthly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: macro_labor
+    why_it_matters: Share of adults with a job. Cleaner than UNRATE when labor-force participation is shifting.
+    ticker_candidate: false
+    tags: [labor, macro]
+    notes:
+
+  - key: real_disposable_income
+    label: Real Disposable Income
+    full_title: Real Disposable Personal Income
+    series_id: DSPIC96
+    source: U.S. Bureau of Economic Analysis
+    url: https://fred.stlouisfed.org/series/DSPIC96
+    frequency: monthly
+    release_day:
+    units: dollars
+    seasonally_adjusted: true
+    category: macro_labor
+    why_it_matters: After-inflation spending power. Tells you whether tenants can absorb rent raises.
+    ticker_candidate: false
+    tags: [income, affordability]
+    notes: Chained 2017 dollars, billions, SAAR.
+
+  - key: real_median_household_income
+    label: Real Median HH Income
+    full_title: Real Median Household Income in the United States
+    series_id: MEHOINUSA672N
+    source: U.S. Census Bureau (Current Population Survey)
+    url: https://fred.stlouisfed.org/series/MEHOINUSA672N
+    frequency: annual
+    release_day:
+    units: dollars
+    seasonally_adjusted: false
+    category: macro_labor
+    why_it_matters: Annual benchmark for income growth. Anchor for affordability math over multi-year horizons.
+    ticker_candidate: false
+    tags: [income, benchmark]
+    notes: Annual only; released with ~9-month lag.
+
+  # === INFLATION =============================================================
+
+  - key: cpi_all_items
+    label: CPI
+    full_title: Consumer Price Index for All Urban Consumers - All Items
+    series_id: CPIAUCSL
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/CPIAUCSL
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: inflation
+    why_it_matters: Headline inflation. What you're being paid back in when you hold a fixed-rate mortgage.
+    ticker_candidate: false
+    tags: [inflation, headline]
+    notes:
+
+  - key: core_cpi
+    label: Core CPI
+    full_title: Consumer Price Index for All Urban Consumers - All Items Less Food and Energy
+    series_id: CPILFESL
+    source: U.S. Bureau of Labor Statistics
+    url: https://fred.stlouisfed.org/series/CPILFESL
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: inflation
+    why_it_matters: What the Fed actually watches. Predicts rate path, which predicts mortgage rates.
+    ticker_candidate: false
+    tags: [inflation, policy, leading]
+    notes:
+
+  - key: pce
+    label: PCE
+    full_title: Personal Consumption Expenditures - Chain-Type Price Index
+    series_id: PCEPI
+    source: U.S. Bureau of Economic Analysis
+    url: https://fred.stlouisfed.org/series/PCEPI
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: inflation
+    why_it_matters: The Fed's preferred inflation gauge — their 2% target is defined against this, not CPI.
+    ticker_candidate: false
+    tags: [inflation, policy]
+    notes:
+
+  - key: core_pce
+    label: Core PCE
+    full_title: Personal Consumption Expenditures Excluding Food and Energy
+    series_id: PCEPILFE
+    source: U.S. Bureau of Economic Analysis
+    url: https://fred.stlouisfed.org/series/PCEPILFE
+    frequency: monthly
+    release_day:
+    units: index
+    seasonally_adjusted: true
+    category: inflation
+    why_it_matters: The single number the Fed cares about most. Directly drives rate-cut/hike decisions.
+    ticker_candidate: false
+    tags: [inflation, policy]
+    notes:
+
+  # === CREDIT & MARKET STRESS ================================================
+
+  - key: sfr_delinquency_rate
+    label: SFR Delinquency
+    full_title: Delinquency Rate on Single-Family Residential Mortgages, All Commercial Banks
+    series_id: DRSFRMACBS
+    source: Board of Governors of the Federal Reserve System
+    url: https://fred.stlouisfed.org/series/DRSFRMACBS
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: credit_stress
+    why_it_matters: Market-stress signal. Rising delinquency = distress inventory coming.
+    ticker_candidate: false
+    tags: [credit, stress, leading]
+    notes:
+
+  - key: sfr_chargeoff_rate
+    label: SFR Charge-Off
+    full_title: Charge-Off Rate on Single-Family Residential Mortgages, All Commercial Banks
+    series_id: CORSFRMACBS
+    source: Board of Governors of the Federal Reserve System
+    url: https://fred.stlouisfed.org/series/CORSFRMACBS
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: credit_stress
+    why_it_matters: Confirmed losses. When this follows delinquencies up, the cycle is real.
+    ticker_candidate: false
+    tags: [credit, stress, lagging]
+    notes:
+
+  - key: household_debt_service_ratio
+    label: Household Debt Service
+    full_title: Household Debt Service Payments as a Percent of Disposable Personal Income
+    series_id: TDSP
+    source: Board of Governors of the Federal Reserve System
+    url: https://fred.stlouisfed.org/series/TDSP
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: credit_stress
+    why_it_matters: How stretched households are. High = rent-raise ceiling; low = headroom for demand.
+    ticker_candidate: false
+    tags: [credit, affordability]
+    notes:
+
+  - key: cre_chargeoff_rate
+    label: CRE Charge-Off
+    full_title: Charge-Off Rate on Commercial Real Estate Loans, All Commercial Banks
+    series_id: CORCREXFACBS
+    source: Board of Governors of the Federal Reserve System
+    url: https://fred.stlouisfed.org/series/CORCREXFACBS
+    frequency: quarterly
+    release_day:
+    units: percent
+    seasonally_adjusted: true
+    category: credit_stress
+    why_it_matters: CRE stress bleeds into small-bank balance sheets — and small banks finance SFR rentals.
+    ticker_candidate: false
+    tags: [credit, cre, stress]
+    notes: Excludes farmland.
