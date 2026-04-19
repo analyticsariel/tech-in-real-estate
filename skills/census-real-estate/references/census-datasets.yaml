@@ -1,0 +1,792 @@
+# Census Dataset Catalog for TiRE
+# =============================================================================
+# Per-dataset catalog for the Census source entry in agents/data/sources.yaml.
+# One entry per ACS 5-Year metric TiRE features on the /data page. Schema is
+# the locked Sprint 4 dataset schema in docs/plans/04-prd.md appendix A,
+# extended (Sprint 8) with an additive benchmark_geos[] field and an optional
+# derivation block for metrics that are a ratio or formula over raw variables.
+#
+# This catalog is metadata — slow, reviewable, human-edited. Snapshot pulls
+# (the actual numbers shown on /data) live in
+# site/data/source-samples/census/{dataset_key}.json and are produced by
+# agents/sources/snapshot.py via agents/sources/census.py.
+#
+# -----------------------------------------------------------------------------
+# Source: U.S. Census Bureau, American Community Survey (ACS) 5-Year Estimates.
+# Why ACS 5-Year (not 1-Year): smoother trend, available for every geography
+# level investors cite (1-Year requires 65k+ pop — most counties and all tracts
+# fall under that threshold and simply don't exist in 1-Year), and it's the
+# convention we've carried across internal data pipelines. Each vintage is a
+# 5-year pooled estimate; vintages release annually each December.
+#
+# Featured geography: Hillsborough County, Florida (Census GEOID 12057 =
+# state 12 + county 057). Counties are the finest ACS geography that fills
+# reliably across every table below — place (city) level returns nulls on
+# several B25* housing tables, per decision #49's tampa_county cascade.
+#
+# Benchmark geographies (Sprint 8): every entry declares benchmark_geos[]
+# with Florida (state:12) + United States (us:1). Sprint 8 fetch module
+# (agents/sources/census.py) pulls primary + both benchmarks per vintage
+# and writes a role-tagged series[] array into the history JSON so metric
+# detail pages render a 3-line chart (Hillsborough vs Florida vs US).
+#
+# featured_geo_code encoding: ACS API predicates take multiple keys
+# (for=county:X&in=state:Y); the schema's single featured_geo_code field is
+# encoded as the canonical FIPS GEOID ("12057") and decoded by
+# agents/sources/census.py into the for/in pair.
+#
+# Derivation block: optional per-entry. When present, the fetch module
+# computes a ratio from the raw variables returned by api_endpoint. Shape:
+#   derivation:
+#     numerator: B25002_003E              # single variable, OR
+#     numerator: [B06009_005E, B06009_006E]  # list = sum of variables
+#     denominator: B25002_001E
+#     multiply_by: 100                    # optional, default 1
+# When absent, the fetch module reads the first data variable directly.
+#
+# Trend window: 5 most recent annual ACS 5-Year vintages (per locked sample
+# JSON rule "last 5 years for slower"). As of April 2026: 2024, 2023, 2022,
+# 2021, 2020.
+#
+# -----------------------------------------------------------------------------
+# To add a dataset:
+#   1. Confirm the table on data.census.gov + variable IDs + their meaning.
+#   2. Verify the table fills at county level for Hillsborough (12057).
+#   3. Fill every field per appendix A schema. why_it_matters required.
+#   4. benchmark_geos[] block is identical across Census entries (FL + US).
+#   5. For ratio/derived metrics, add a derivation block.
+#   6. Add to this file in the PR that uses it.
+# =============================================================================
+
+datasets:
+
+  - key: census_population
+    label: Population (Census)
+    full_title: Total Population — ACS 5-Year Estimate (Table B01003)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B01003_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Total Population — Hillsborough County, FL. Five most recent ACS 5-Year vintages.
+      Source: U.S. Census Bureau, ACS 5-Year Estimates (Table B01003).
+      Swap for=county:057 → for=state:12 or for=us:1 to fetch Florida or US benchmarks.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"  # Hillsborough
+      STATE = "12"    # Florida
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B01003_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The denominator behind every market-size argument. Year-over-year growth
+      here is the most reliable leading indicator that a market's rents and
+      prices have room to run. Compare Hillsborough's trajectory to Florida
+      and the US to see whether demand is local-hot or a rising-tide effect.
+    tags: [population, demographics, demand, leading]
+    notes: >
+      Hillsborough County (Tampa's home county) = Census county 057 in state
+      12 (Florida). Encoded as GEOID 12057 in featured_geo_code;
+      agents/sources/census.py decodes that into the for=county:057&in=state:12
+      API predicate. Benchmarks (state + national) pulled per vintage so the
+      detail page renders Hillsborough vs Florida vs US on one chart.
+
+  - key: census_median_income
+    label: Median Household Income
+    full_title: Median Household Income in the Past 12 Months (Inflation-Adjusted) — ACS 5-Year Estimate (Table B19013)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B19013_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Household Income — Hillsborough County, FL. ACS 5-Year (Table B19013).
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"  # Hillsborough
+      STATE = "12"    # Florida
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B19013_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The demand-side ceiling for what you can charge in rent. Apply the
+      30%-of-income rule (divide by 40) and you have the local rent comp
+      ceiling — pair with median rent to know if you have room to push.
+      Hillsborough vs Florida vs US tells you whether a market's rent is
+      priced to local income or imported demand.
+    tags: [income, demand, affordability]
+    notes: >
+      Each vintage is inflation-adjusted to its final year. Year-over-year
+      comparisons across vintages are nominal — adjust separately if you need
+      real growth. Benchmarks pulled per vintage (FL, US) for chart context.
+
+  - key: census_bachelors_or_higher
+    label: Bachelor's Degree or Higher
+    full_title: Educational Attainment for Population 25+ — % with Bachelor's Degree or Higher (Derived from Table B06009)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B06009_001E,B06009_005E,B06009_006E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    derivation:
+      numerator: [B06009_005E, B06009_006E]
+      denominator: B06009_001E
+      multiply_by: 100
+    python_snippet: |
+      """
+      Bachelor's Degree or Higher — % of adults 25+, Hillsborough County, FL.
+      Source: U.S. Census Bureau, ACS 5-Year Estimates (Table B06009).
+      Derivation: (B06009_005E bachelor's + B06009_006E graduate) / B06009_001E total.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+      VARS = "B06009_001E,B06009_005E,B06009_006E"  # total, bachelors, graduate
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,{VARS}"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          total, bachelors, graduate = int(row[1]), int(row[2]), int(row[3])
+          pct = round((bachelors + graduate) / total * 100, 2)
+          print(year, pct)
+    why_it_matters: >
+      The single education number that predicts long-run rent and price growth.
+      Bachelor's-share momentum is the leading indicator of high-income inflow
+      and gentrification — pair with population growth to triangulate demand.
+      Benchmark against state + national to see if Hillsborough is drawing
+      educated inflow faster than the surrounding baseline.
+    tags: [education, demographics, demand, leading]
+    notes: >
+      Uses Table B06009 (Place of Birth by Educational Attainment). B06009 is
+      more compact than B15003 (5 levels vs ~25) and gives the same
+      bachelor's-or-higher ratio. Sub-levels (no HS, HS, associates) rolled
+      into the denominator, not shipped as separate metrics.
+
+  - key: census_median_home_value
+    label: Median Home Value
+    full_title: Median Value (Dollars) for Owner-Occupied Housing Units — ACS 5-Year Estimate (Table B25077)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25077_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Home Value — owner-occupied units, Hillsborough County, FL.
+      Source: ACS 5-Year (Table B25077). Self-reported median estimated value.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25077_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The headline wealth proxy. Anchors every "is this market expensive" question,
+      sets the cap-rate math denominator, and defines the mortgage amount you'd
+      underwrite against. Hillsborough vs Florida vs US shows whether the county
+      commands a price premium or discount — and tracks whether that gap is
+      widening or closing across vintages.
+    tags: [home_value, prices, wealth, supply_side]
+    notes: >
+      Self-reported by owners in the ACS, so this is an estimated-market-value
+      figure, not a transaction price. Lags current cycle by the ACS 5-year
+      pooling window; cross-check against realtor/zillow sources for
+      near-current pricing.
+
+  - key: census_median_gross_rent
+    label: Median Gross Rent
+    full_title: Median Gross Rent (Dollars) — ACS 5-Year Estimate (Table B25064)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25064_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Gross Rent — renter-occupied units, Hillsborough County, FL.
+      Source: ACS 5-Year (Table B25064). Gross = contract rent + utilities.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25064_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The revenue side of every SFR underwrite in this market. Gross rent
+      (includes utilities, unlike B25031 contract rent) is the investor-standard
+      comparison number. Pair with median household income for rent-burden math
+      and with median home value for rent-to-price ratios. Benchmark against
+      Florida and US to see whether Hillsborough rents are local-market or
+      pulled up by statewide/coastal pressures.
+    tags: [rent, income, demand, revenue_side]
+    notes: >
+      B25064 is "gross rent" — contract rent plus estimated utility costs.
+      Chose B25064 over B25031 (contract rent only) because most investor
+      comps and leasing norms quote gross. The market-brief research script
+      already uses this code.
+
+  - key: census_median_owner_costs
+    label: Median Monthly Owner Costs
+    full_title: Median Selected Monthly Owner Costs (Dollars) for Housing Units with a Mortgage — ACS 5-Year Estimate (Table B25088)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25088_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Monthly Owner Costs (with Mortgage) — Hillsborough County, FL.
+      Source: ACS 5-Year (Table B25088). SMOC = mortgage P&I + taxes + insurance
+      + utilities + HOA. The "all-in carry cost" for a mortgaged owner.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25088_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The symmetric pair to median gross rent — "what does a mortgaged owner
+      actually pay monthly" across all categories (P&I, taxes, insurance,
+      utilities, HOA). Close to median rent + utilities means rent-vs-buy is
+      a coin flip; far above means renting is the better deal. Hillsborough
+      vs Florida vs US reads whether Tampa carries a cost premium or runs
+      cheaper than the surrounding baseline.
+    tags: [housing_cost, ownership, affordability, cost_side]
+    notes: >
+      B25088 is "Selected Monthly Owner Costs by Mortgage Status." Variable
+      _001E is the headline median for housing units with a mortgage, which
+      is the investor-relevant comparator. Without-mortgage subset (older,
+      paid-off properties) is a different distribution and not charted here.
+
+  - key: census_median_rent_burden
+    label: Median Rent Burden
+    full_title: Median Gross Rent as a Percentage of Household Income — ACS 5-Year Estimate (Table B25071)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25071_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Rent Burden — gross rent as % of household income, Hillsborough.
+      Source: ACS 5-Year (Table B25071). Direct single-variable ratio.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25071_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, float(row[1]))
+    why_it_matters: >
+      The single number that tells you whether rent has more room to run in
+      this market. Median rent burden rises when rent outpaces income; it
+      falls when incomes catch up. Above 30% is federally-defined "cost-burdened"
+      — once the local median crosses that threshold, further rent push meets
+      real income resistance. Benchmark against FL + US to see whether
+      Hillsborough renters are more or less stretched than the baseline.
+    tags: [rent_burden, affordability, demand_ceiling]
+    notes: >
+      B25071 is the table's single-variable median — already computed by the
+      Census, no derivation needed. Chose this over B25070 (rent-as-%-income
+      buckets, which would require summing _007 through _010 for the
+      >30% share) because it's simpler and gives the single-number version
+      of the same concept.
+
+  - key: census_homeownership_rate
+    label: Homeownership Rate
+    full_title: Homeownership Rate (% Owner-Occupied of Occupied Housing) — Derived from Table B25003
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25003_001E,B25003_002E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    derivation:
+      numerator: B25003_002E
+      denominator: B25003_001E
+      multiply_by: 100
+    python_snippet: |
+      """
+      Homeownership Rate — owner-occupied % of occupied housing, Hillsborough.
+      Source: ACS 5-Year (Table B25003). Derivation: _002E / _001E * 100.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+      VARS = "B25003_001E,B25003_002E"  # total, owner-occupied
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,{VARS}"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          total, owner = int(row[1]), int(row[2])
+          pct = round(owner / total * 100, 2)
+          print(year, pct)
+    why_it_matters: >
+      The mix signal for a rental investor. High homeownership means the
+      rental pool is shallow (fewer renters competing for units, but also
+      fewer units on the rental market); low homeownership means a big renter
+      base supports liquidity and leasing velocity. The trend direction
+      matters as much as the level — falling ownership often precedes rent
+      pressure. Benchmark against FL + US to find markets that deviate from
+      the national equilibrium.
+    tags: [tenure, ownership, market_structure]
+    notes: >
+      B25003 is the classic tenure table: _001 total occupied, _002 owner-
+      occupied, _003 renter-occupied. Renter-occupancy rate would be the
+      complement (100 - homeownership).
+
+  - key: census_vacancy_rate
+    label: Vacancy Rate
+    full_title: Vacancy Rate (% Vacant of Total Housing Units) — Derived from Table B25002
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25002_001E,B25002_003E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    derivation:
+      numerator: B25002_003E
+      denominator: B25002_001E
+      multiply_by: 100
+    python_snippet: |
+      """
+      Vacancy Rate — vacant units as % of total housing units, Hillsborough.
+      Source: ACS 5-Year (Table B25002). Derivation: _003E / _001E * 100.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+      VARS = "B25002_001E,B25002_003E"  # total, vacant
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,{VARS}"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          total, vacant = int(row[1]), int(row[2])
+          pct = round(vacant / total * 100, 2)
+          print(year, pct)
+    why_it_matters: >
+      The supply-pressure gauge. Low vacancy (under ~7%) means tight market:
+      rents push, leasing time-on-market compresses, operator leverage rises.
+      High vacancy (above ~12%) flips the dynamic — concessions return, days-
+      on-market stretches, and cap rates soften. The ACS vacancy rate captures
+      both rental and for-sale inventory, so it's a broader read than Realtor's
+      listed-inventory metric. Benchmark against FL + US to distinguish local
+      tightness from regional/national cycle state.
+    tags: [vacancy, supply, market_tightness]
+    notes: >
+      B25002 splits occupied vs vacant. _003E (vacant) includes for-rent,
+      for-sale, seasonal, and other vacant categories. For a rental-only
+      vacancy rate, B25004 breaks out vacancy reason — parked for a future
+      entry if needed.
+
+  - key: census_housing_units
+    label: Total Housing Units
+    full_title: Total Housing Units — ACS 5-Year Estimate (Table B25034, Variable _001E)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25034_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Total Housing Units — Hillsborough County, FL.
+      Source: ACS 5-Year (Table B25034, headline variable _001E).
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25034_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      The scale denominator. Tells you whether the rental market you're
+      entering is 400k units or 4M units — affects comp density, data
+      reliability, and competitive dynamics. Growth rate year-over-year is
+      the cleanest supply-addition indicator (new construction net of
+      demolitions). In indexed mode the chart shows Hillsborough's housing
+      stock growth vs Florida vs US — expanding faster or slower than the
+      baseline.
+    tags: [housing_stock, supply, scale]
+    notes: >
+      B25034 is "Year Structure Built"; _001E is the total-housing-units
+      estimate at the top of the table. The table also breaks out units by
+      construction decade — not charted as separate metrics, but referenced
+      in the median_year_built entry below.
+
+  - key: census_median_year_built
+    label: Median Year Structure Built
+    full_title: Median Year Structure Built — ACS 5-Year Estimate (Table B25035)
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B25035_001E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      Median Year Structure Built — Hillsborough County, FL.
+      Source: ACS 5-Year (Table B25035). The year above which half the
+      housing stock was built.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,B25035_001E"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          print(year, int(row[1]))
+    why_it_matters: >
+      A capex proxy at the market level. Older median year = higher expected
+      maintenance costs, more deferred-maintenance comp risk, more
+      opportunity for value-add. Newer median year = lighter capex
+      assumptions but tighter cap rates. Shifts slowly (a metro's housing
+      stock doesn't re-age year-to-year) so watch the benchmark gap — if
+      Hillsborough's stock is aging faster than Florida's, construction is
+      lagging demolition/growth.
+    tags: [housing_age, capex, stock_composition]
+    notes: >
+      B25035 is a single-variable median — the year such that half of housing
+      units were built before and half after. Unit is technically "count" for
+      schema purposes (an integer year), but the chart reader should treat
+      it as a year value. Indexed mode doesn't make sense for year values;
+      fetch module flags this and forces raw mode.
+
+  - key: census_labor_force_participation
+    label: Labor Force Participation Rate
+    full_title: Labor Force Participation Rate (% of Population 16+ In Labor Force) — Derived from Table B23025
+    source_key: census
+    access: api
+    api_endpoint: https://api.census.gov/data/{year}/acs/acs5?get=NAME,B23025_001E,B23025_007E&for=county:057&in=state:12&key={CENSUS_API_KEY}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county, place, tract, block-group]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "12"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    derivation:
+      numerator: B23025_001E
+      denominator: B23025_001E
+      multiply_by: 100
+      subtract_from_numerator: B23025_007E
+    python_snippet: |
+      """
+      Labor Force Participation Rate — Hillsborough County, FL.
+      Source: ACS 5-Year (Table B23025). LFPR = (total 16+ in labor force) /
+      (total population 16+) = (_001E - _007E) / _001E * 100.
+      """
+      import os
+      import requests
+
+      CENSUS_API_KEY = os.environ["CENSUS_API_KEY"]
+      COUNTY = "057"
+      STATE = "12"
+      VARS = "B23025_001E,B23025_007E"  # total 16+, not-in-labor-force
+
+      for year in [2024, 2023, 2022, 2021, 2020]:
+          url = (
+              f"https://api.census.gov/data/{year}/acs/acs5"
+              f"?get=NAME,{VARS}"
+              f"&for=county:{COUNTY}&in=state:{STATE}"
+              f"&key={CENSUS_API_KEY}"
+          )
+          r = requests.get(url, timeout=30)
+          r.raise_for_status()
+          header, row = r.json()
+          total_16plus, not_in_lf = int(row[1]), int(row[2])
+          in_lf = total_16plus - not_in_lf
+          pct = round(in_lf / total_16plus * 100, 2)
+          print(year, pct)
+    why_it_matters: >
+      The economic-engagement gauge. High LFPR = strong job market pulling
+      adults into paid work; falling LFPR = retirees, students, or discouraged
+      workers expanding. For a rental investor, LFPR predicts rent-payment
+      capacity in aggregate — a county with falling LFPR has a thinner
+      employed-renter pool. Benchmark against FL + US to distinguish local
+      conditions from Sunbelt retirement drift.
+    tags: [labor, employment, demand_side]
+    notes: >
+      B23025 is "Employment Status for the Population 16 Years and Over." The
+      headline LFPR derivation uses 001 (total 16+) minus 007 (not in labor
+      force) over 001 — equivalent to summing _002 (in armed forces) + _003
+      (civilian labor force) over _001, but cleaner. Derivation block uses
+      subtract_from_numerator to express "numerator = denom - subtracted_var".
