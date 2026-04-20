@@ -1,0 +1,836 @@
+# HUD Dataset Catalog for TiRE
+# =============================================================================
+# Per-dataset catalog for the HUD source entry in agents/data/sources.yaml.
+# One entry per HUD USER API dataset TiRE features on the /data page. Schema
+# is the locked Sprint 4 dataset schema in docs/plans/04-prd.md appendix A,
+# extended (Sprint 8) with an additive benchmark_geos[] field. Sprint 13
+# bifurcates benchmarks per category to match what HUD natively publishes
+# (decision #84).
+#
+# This catalog is metadata — slow, reviewable, human-edited. Snapshot pulls
+# (the actual numbers shown on /data) live in
+# site/data/source-samples/hud/{dataset_key}.json and are produced by
+# agents/sources/snapshot.py via agents/sources/hud.py.
+#
+# -----------------------------------------------------------------------------
+# Source: U.S. Department of Housing and Urban Development — HUD USER API.
+#   FMR:  https://www.huduser.gov/hudapi/public/fmr/data/{entityid}?year=YYYY
+#   IL:   https://www.huduser.gov/hudapi/public/il/data/{entityid}?year=YYYY
+#   CHAS: https://www.huduser.gov/hudapi/public/chas?type=N&stateId=S&entityId=E&year=Y1-Y2
+# Auth: Bearer token (HUD_API_KEY) in the Authorization header. Keys are
+# HUD USER personal access tokens (User Profile → Access Token). Same key
+# works across all three endpoints.
+#
+# -----------------------------------------------------------------------------
+# Featured geography: Hillsborough County, Florida.
+#   FMR / IL entityid = 1205799999  (HUD county format: {state_fips}{county_fips}99999)
+#   CHAS parameters   = type=3&stateId=12&entityId=57  (CHAS uses split params, not a concatenated entityid)
+# Per decision #80 HUD migrated from Tampa MSA to Hillsborough County for
+# consistency with Sprints 8–10 (Census, Redfin, Realtor) that already anchor
+# on county grain. Note: HUD FMR is MSA-assigned by statute — querying the
+# county entityid routes to the parent MSA's FMR numbers. The county query
+# still returns per-ZIP SAFMR rows underneath for Tampa MSA (SAFMR-designated
+# metro as of FY2026).
+#
+# -----------------------------------------------------------------------------
+# Benchmarks (decision #84, reshapes #81): bifurcated by category.
+#   - FMR (5 entries):  no benchmark_geos. HUD does not publish state or
+#                       national FMR aggregates (/fmr/statedata returns a
+#                       county list, not a rollup). Single-line charts.
+#   - IL  (4 entries):  benchmark_geos has ONE entry — Florida only.
+#                       /il/statedata/FL returns native state-level median_income
+#                       + 30/50/80% AMI tiers. National AMI does not exist
+#                       (HUD 400s on /il/nationaldata, /il/data/US, etc. — AMI
+#                       is definitionally local).
+#   - CHAS (3 entries): benchmark_geos has TWO entries — Florida + US.
+#                       CHAS supports type=1 (nation) and type=2 (state)
+#                       natively with the same A-J variable shape.
+# The site's MetricChart.tsx (Sprint 8) handles 1-line, 2-line, and 3-line
+# modes off the same series[] history shape — no component changes required.
+#
+# -----------------------------------------------------------------------------
+# Trend window: 5 most recent published vintages per dataset. As of April 2026:
+#   FMR  = [2026, 2025, 2024, 2023, 2022]      (FY26 FMR released Oct 2025)
+#   IL   = [2025, 2024, 2023, 2022, 2021]      (IL FY26 not yet published)
+#   CHAS = ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]
+#          (CHAS is ACS 5-year windows; latest release was Dec 2025)
+#
+# -----------------------------------------------------------------------------
+# CHAS variable coding: the CHAS API uses its own A1-J17 system (132 vars),
+# DIFFERENT from the T{n}_est* coding in HUD's CSV-download data dictionary.
+# Groups used by Sprint 13:
+#   A group = Household Income × Occupancy. Per 5 income tiers (≤30%, 30-50%,
+#             50-80%, 80-100%, >100% HAMFI), 3 cells — owner / renter / total.
+#             A1=≤30% owner, A2=≤30% renter, A3=≤30% total, ..., A15=>100% total.
+#             A16=owner total, A17=renter total, A18=grand total.
+#   D group = Cost Burden × Occupancy direct. D1/D2/D3 = CB≤30% (own/rent/total);
+#             D4/D5/D6 = CB 30.1-50%; D7/D8/D9 = CB >50%; D10-D12 = not computed.
+# Group D gives us flat, stable derivations — no per-tier fan-out, no cross-
+# sum fragility. Verified against Hillsborough 2018-2022: 25.0%, 22.3%, 121,940.
+#
+# -----------------------------------------------------------------------------
+# To add a dataset:
+#   1. Confirm the HUD USER endpoint + entityid (FMR/IL) or params (CHAS).
+#   2. Pick the featured cut — HUD responses are multi-dimensional
+#      (FMR = 5 bedrooms; IL = 3 tiers × 8 sizes; CHAS = 132 vars across
+#      10 groups). One scalar per observation per the locked sample JSON schema.
+#   3. Fill every field per appendix A schema. why_it_matters required.
+#   4. benchmark_geos[] follows the bifurcated rule above — don't invent
+#      aggregates HUD doesn't publish.
+#   5. Add to this file in the PR that uses it.
+# =============================================================================
+
+datasets:
+
+  # -----------------------------------------------------------------------------
+  # Category 1 — Rent Ceilings (Fair Market Rent). 2 featured bedroom tiers —
+  # the policy headline (2BR) and the SFR-investor tier (3BR). The other 3
+  # bedroom values (efficiency, 1BR, 4BR) are captured by the fetch module into
+  # site/data/archive/hud/fmr_bedroom_breakout.json per snapshot run — no data
+  # is lost by the trim, those values just don't have their own detail pages.
+  # Rationale: FMR tiers move in lockstep (HUD bumps the whole schedule at
+  # once), so five chart entries with near-identical shapes reads as padding.
+  # 2BR and 3BR are the two tiers that genuinely diverge on the uplift ratio
+  # across metros. No benchmark_geos per decision #84 (HUD assigns FMR at MSA
+  # level; state/national aggregates don't exist).
+  # -----------------------------------------------------------------------------
+
+  - key: hud_fmr_2br
+    label: Fair Market Rent (2BR)
+    full_title: Fair Market Rent — Two-Bedroom — Hillsborough County, FL (HUD FY-Annual)
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/fmr/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    python_snippet: |
+      """
+      HUD Fair Market Rent — 2-bedroom, Hillsborough County, FL. Five most
+      recent FY vintages. Source: HUD USER Fair Market Rents API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      ENTITY_ID = "1205799999"
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2026, 2025, 2024, 2023, 2022]:
+          url = f"https://www.huduser.gov/hudapi/public/fmr/data/{ENTITY_ID}?year={year}"
+          r = requests.get(url, headers=headers, timeout=30)
+          r.raise_for_status()
+          msa_row = next(
+              row for row in r.json()["data"]["basicdata"]
+              if row["zip_code"] == "MSA level"
+          )
+          print(year, msa_row["Two-Bedroom"])
+    why_it_matters: >
+      The default FMR number. When someone says "what's the voucher rent on
+      a 2BR in Tampa," this is the answer. It's also the 2BR comp every
+      lender will accept as a defensible market anchor — HUD publishes a
+      fresh survey every FY and writes the methodology out in the open.
+    tags: [rent, policy, voucher, section_8, two_bedroom, ceiling]
+    notes: >
+      The literal max a voucher pays on a 2BR in Tampa. Migrated from MSA
+      entityid to county entityid in Sprint 13; value unchanged because FMR
+      is MSA-assigned.
+
+  - key: hud_fmr_3br
+    label: Fair Market Rent (3BR)
+    full_title: Fair Market Rent — Three-Bedroom — Hillsborough County, FL (HUD FY-Annual)
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/fmr/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    python_snippet: |
+      """
+      HUD Fair Market Rent — 3-bedroom, Hillsborough County, FL. Five most
+      recent FY vintages. Source: HUD USER Fair Market Rents API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      ENTITY_ID = "1205799999"
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2026, 2025, 2024, 2023, 2022]:
+          url = f"https://www.huduser.gov/hudapi/public/fmr/data/{ENTITY_ID}?year={year}"
+          r = requests.get(url, headers=headers, timeout=30)
+          r.raise_for_status()
+          msa_row = next(
+              row for row in r.json()["data"]["basicdata"]
+              if row["zip_code"] == "MSA level"
+          )
+          print(year, msa_row["Three-Bedroom"])
+    why_it_matters: >
+      The SFR tier. Most 1-to-3-property operators are buying 3-bedroom
+      single-family homes, and this is the FMR that applies when you take
+      a voucher on one. Pairs with ACS median gross rent
+      (census_median_gross_rent) — if FMR is above median rent, voucher
+      tenants are a premium; if below, they're a discount to market.
+    tags: [rent, policy, voucher, section_8, sfr, three_bedroom]
+    notes: >
+      The most reader-relevant FMR for the tech-investor audience — SFR
+      operators default here. FMR is MSA-assigned; county query routes to
+      Tampa MSA rollup.
+
+  # -----------------------------------------------------------------------------
+  # Category 2 — Income Limits. Four standard IL tiers (median + 30/50/80% AMI)
+  # plus one MTSP IL tier (60% AMI) for LIHTC rent-cap work. Standard IL comes
+  # from /il/data/{entityid} with Florida benchmark; MTSP IL comes from a
+  # separate /mtspil/data/{entityid} endpoint with no benchmark (HUD doesn't
+  # publish MTSP IL state aggregates — /mtspil/statedata/FL returns 404).
+  # No national AMI at either endpoint — the "area" in AMI is definitionally
+  # local.
+  # -----------------------------------------------------------------------------
+
+  - key: hud_il_ami
+    label: Area Median Income (AMI, 4p)
+    full_title: HUD Area Median Income (AMI) — 4-Person Household Reference — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+    python_snippet: |
+      """
+      HUD Area Median Income — 4-person household reference, Hillsborough
+      County (primary) + Florida (benchmark). Five most recent FY vintages.
+      Source: HUD USER Income Limits API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2025, 2024, 2023, 2022, 2021]:
+          url_county = f"https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}"
+          url_state  = f"https://www.huduser.gov/hudapi/public/il/statedata/FL?year={year}"
+          d_county = requests.get(url_county, headers=headers, timeout=30).json()["data"]
+          d_state  = requests.get(url_state,  headers=headers, timeout=30).json()["data"]
+          print(year, "county:", d_county["median_income"], "FL:", d_state["median_income"])
+    why_it_matters: >
+      The reference every "% of AMI" conversation anchors on. HUD's 4-person
+      AMI is the denominator behind the 30/50/80% tiers; chasing market rent
+      above AMI / 40 tells you the deal sits past what local incomes can
+      absorb. Tracked against Florida to see whether Hillsborough is pulling
+      ahead of state income growth or falling behind.
+    tags: [income, ami, reference, demand, affordability]
+    notes: >
+      HUD AMI is a 4-person reference; the agency adjusts it by household
+      size for the il{30,50,80}_pN fields. Not the same as Census ACS median
+      household income (different survey, different methodology) — use HUD
+      AMI when anchoring to HUD-program thresholds. National AMI does not
+      exist (the "area" in AMI is definitionally local).
+
+  - key: hud_il_30ami_4person
+    label: Income Limit (30% AMI, 4-person)
+    full_title: HUD Income Limit — Extremely Low-Income (30% AMI), 4-Person Household — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+    python_snippet: |
+      """
+      HUD Income Limit — 30% AMI, 4-person household, Hillsborough County
+      (primary) + Florida (benchmark). Five most recent FY vintages.
+      Source: HUD USER Income Limits API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2025, 2024, 2023, 2022, 2021]:
+          url_county = f"https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}"
+          url_state  = f"https://www.huduser.gov/hudapi/public/il/statedata/FL?year={year}"
+          d_county = requests.get(url_county, headers=headers, timeout=30).json()["data"]
+          d_state  = requests.get(url_state,  headers=headers, timeout=30).json()["data"]
+          print(year, "county:", d_county["extremely_low"]["il30_p4"], "FL:", d_state["extremely_low"]["il30_p4"])
+    why_it_matters: >
+      The extremely-low-income threshold — federal definition of households
+      most at-risk for eviction and the qualifying line for LIHTC's 30%
+      basis boost and several HUD rental programs. If you're underwriting
+      deep-affordable, this is where the rent caps come from. If you're
+      market-rate, it's a useful floor for "how poor is too poor to be a
+      target tenant" in a specific county.
+    tags: [income, policy, ami, extremely_low, lihtc, section_8]
+    notes: >
+      HUD's "extremely low" tier. Rent caps under LIHTC 30% AMI set units
+      tie to this number; HUD rental-assistance programs use it as a
+      priority threshold. Benchmarked against Florida's 30% AMI to see
+      whether Hillsborough's poverty ceiling is moving with or against
+      the statewide baseline.
+
+  - key: hud_il_50ami_4person
+    label: Income Limit (50% AMI, 4-person)
+    full_title: HUD Income Limit — Very Low-Income (50% AMI), 4-Person Household — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+    python_snippet: |
+      """
+      HUD Income Limit — 50% AMI, 4-person household, Hillsborough County
+      (primary) + Florida (benchmark). Five most recent FY vintages.
+      Source: HUD USER Income Limits API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2025, 2024, 2023, 2022, 2021]:
+          url_county = f"https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}"
+          url_state  = f"https://www.huduser.gov/hudapi/public/il/statedata/FL?year={year}"
+          d_county = requests.get(url_county, headers=headers, timeout=30).json()["data"]
+          d_state  = requests.get(url_state,  headers=headers, timeout=30).json()["data"]
+          print(year, "county:", d_county["very_low"]["il50_p4"], "FL:", d_state["very_low"]["il50_p4"])
+    why_it_matters: >
+      The Section 8 voucher eligibility base — a household below 50% AMI is
+      the default voucher target. This is also the rent-cap anchor for
+      LIHTC 50% AMI units and the qualifying line for Section 202 / 811
+      programs. For a 1-to-3-property investor underwriting voucher tenants,
+      this is the number that says "will my target resident actually
+      qualify at my target rent?"
+    tags: [income, policy, ami, very_low, voucher, section_8, lihtc]
+    notes: >
+      "Very Low" per HUD's taxonomy. Voucher eligibility ranges below this;
+      most LIHTC 50% AMI rent schedules cap rent at 30% of this figure
+      minus utilities. Pair with hud_fmr_2br to see whether voucher rent
+      and voucher income are moving together or diverging.
+
+  - key: hud_il_80ami_4person
+    label: Income Limit (80% AMI, 4-person)
+    full_title: HUD Income Limit — Low-Income (80% AMI), 4-Person Household — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+    python_snippet: |
+      """
+      HUD Income Limit — 80% AMI, 4-person household, Hillsborough County
+      (primary) + Florida (benchmark). Five most recent FY vintages.
+      Source: HUD USER Income Limits API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2025, 2024, 2023, 2022, 2021]:
+          url_county = f"https://www.huduser.gov/hudapi/public/il/data/1205799999?year={year}"
+          url_state  = f"https://www.huduser.gov/hudapi/public/il/statedata/FL?year={year}"
+          d_county = requests.get(url_county, headers=headers, timeout=30).json()["data"]
+          d_state  = requests.get(url_state,  headers=headers, timeout=30).json()["data"]
+          print(year, "county:", d_county["low"]["il80_p4"], "FL:", d_state["low"]["il80_p4"])
+    why_it_matters: >
+      The "low-income" ceiling. A household below this qualifies for most
+      affordable-housing programs, some down-payment assistance, and LIHTC
+      80% AMI units. For a tech investor: any working-class tenant in your
+      Tampa rental pool is almost certainly under this line, and it defines
+      the top of the demand pool most affordable-housing programs compete
+      for.
+    tags: [income, policy, ami, low_income, lihtc, voucher]
+    notes: >
+      "Low" per HUD's taxonomy. Migrated from MSA to county grain in Sprint
+      13; HUD's county and MSA numbers for Tampa match because IL is
+      MSA-anchored. Other tiers and household sizes live in the same API
+      response under `extremely_low` / `very_low` / `low`.
+
+  - key: hud_mtspil_60ami_4person
+    label: LIHTC Income Limit (60% AMI, 4-person)
+    full_title: HUD MTSP Income Limit — LIHTC 60% AMI, 4-Person Household — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/mtspil/data/1205799999?year={year}
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    python_snippet: |
+      """
+      HUD MTSP Income Limit — 60% AMI, 4-person household, Hillsborough
+      County. Five most recent FY vintages. This is the income anchor behind
+      LIHTC 60% AMI set-aside rent caps — the most common LIHTC deal type
+      in Florida. Separate endpoint from standard IL (/mtspil/data vs /il/data).
+      Source: HUD USER Multifamily Tax Subsidy Program Income Limits API.
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      ENTITY_ID = "1205799999"  # Hillsborough County, FL
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      for year in [2025, 2024, 2023, 2022, 2021]:
+          url = f"https://www.huduser.gov/hudapi/public/mtspil/data/{ENTITY_ID}?year={year}"
+          r = requests.get(url, headers=headers, timeout=30)
+          r.raise_for_status()
+          print(year, r.json()["data"]["60percent"]["il60_p4"])
+    why_it_matters: >
+      The LIHTC rent-cap anchor. Most Florida LIHTC projects underwrite at
+      the 60% AMI set-aside — rent cannot exceed 30% of this income figure
+      (minus a utility allowance). If you're tracking LIHTC supply in your
+      market, this is the income line that sets the ceiling; if you're
+      underwriting a tax-credit deal directly, this is the number your
+      rent schedule keys off.
+    tags: [income, policy, ami, lihtc, mtsp, rent_cap, tax_credit]
+    notes: >
+      MTSP IL is published alongside standard IL but at a separate endpoint
+      (/mtspil/data) and carries additional tiers (20/40/60/70% + HERA
+      special 50%/60%). No Florida state benchmark — HUD doesn't publish
+      MTSP IL state rollups (/mtspil/statedata/FL returns 404). Single-line
+      chart per decision #85. The 4-person household size is the reference;
+      other sizes are in the same response as il60_p{1..8}.
+
+  # -----------------------------------------------------------------------------
+  # Category 3 — Housing Needs (CHAS). Custom tabulations of ACS data that
+  # ACS 5-Year alone can't answer: cost burden crossed with tenure and income.
+  # New endpoint (/chas), different schema (A1-J17 coded variables), but same
+  # Bearer auth. Full benchmarks — CHAS supports type=1 (nation) and
+  # type=2 (state) natively.
+  # -----------------------------------------------------------------------------
+
+  - key: hud_chas_renter_severe_cost_burden
+    label: Renter Severe Cost Burden (>50% of income)
+    full_title: CHAS — Renter Households with Severe Cost Burden (>50% of Income) — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/chas?type=3&stateId=12&entityId=57&year={year}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, county, place, tract]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    chas_params:
+      type: 3
+      state_id: 12
+      entity_id: 57
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        chas_params:
+          type: 2
+          state_id: 12
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        chas_params:
+          type: 1
+    derivation:
+      numerator: D8
+      denominator: A17
+      multiply_by: 100
+    python_snippet: |
+      """
+      HUD CHAS — Renter households with severe cost burden (>50% of income),
+      as % of all renter households. Hillsborough County (primary) + Florida
+      + US (benchmarks). Five most recent ACS 5-year vintages.
+      Source: HUD USER CHAS API.
+
+      Derivation (CHAS API variable coding):
+        D8  = renter households with cost burden >50%
+        A17 = renter households total
+        rate = D8 / A17 * 100
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      def rate(params, year):
+          url = f"https://www.huduser.gov/hudapi/public/chas?year={year}&{params}"
+          row = requests.get(url, headers=headers, timeout=30).json()[0]
+          # CHAS API returns counts as strings — cast before arithmetic.
+          return float(row["D8"]) / float(row["A17"]) * 100
+
+      for year in ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]:
+          print(year,
+                "Hillsborough:", round(rate("type=3&stateId=12&entityId=57", year), 1),
+                "FL:",            round(rate("type=2&stateId=12",             year), 1),
+                "US:",            round(rate("type=1",                         year), 1))
+    why_it_matters: >
+      The renter-distress gauge. A household paying more than half its
+      income on rent has no buffer — one car repair away from late rent,
+      one job loss from eviction. Above ~25% this is a wide renter pool
+      under real strain, which caps your rent-push headroom and raises
+      delinquency risk. Track it against Florida and the US to see whether
+      Hillsborough's distress is local or a national pattern.
+    tags: [cost_burden, renter, severe, affordability, demand, distress]
+    notes: >
+      CHAS's "severe cost burden" threshold is the federal definition — the
+      same line HUD uses to flag households for affordable-housing priority.
+      CHAS is a custom ACS tabulation, so it releases on a ~3-year lag
+      (latest release Dec 2025 covers 2018-2022).
+
+  - key: hud_chas_owner_cost_burden
+    label: Owner Cost Burden (>30% of income)
+    full_title: CHAS — Owner Households with Cost Burden (>30% of Income) — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/chas?type=3&stateId=12&entityId=57&year={year}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, county, place, tract]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    chas_params:
+      type: 3
+      state_id: 12
+      entity_id: 57
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        chas_params:
+          type: 2
+          state_id: 12
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        chas_params:
+          type: 1
+    derivation:
+      numerator: [D4, D7]
+      denominator: A16
+      multiply_by: 100
+    python_snippet: |
+      """
+      HUD CHAS — Owner households with cost burden (>30% of income), as %
+      of all owner households. Hillsborough County (primary) + Florida +
+      US (benchmarks). Five most recent ACS 5-year vintages.
+      Source: HUD USER CHAS API.
+
+      Derivation:
+        D4  = owner households with cost burden 30.1%-50%
+        D7  = owner households with cost burden >50%
+        A16 = owner households total
+        rate = (D4 + D7) / A16 * 100
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      def rate(params, year):
+          url = f"https://www.huduser.gov/hudapi/public/chas?year={year}&{params}"
+          row = requests.get(url, headers=headers, timeout=30).json()[0]
+          # CHAS API returns counts as strings — cast before arithmetic.
+          return (float(row["D4"]) + float(row["D7"])) / float(row["A16"]) * 100
+
+      for year in ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]:
+          print(year,
+                "Hillsborough:", round(rate("type=3&stateId=12&entityId=57", year), 1),
+                "FL:",            round(rate("type=2&stateId=12",             year), 1),
+                "US:",            round(rate("type=1",                         year), 1))
+    why_it_matters: >
+      The homeowner mirror of renter cost burden. This is the share of
+      mortgaged-plus-free-and-clear owners spending over 30% of income on
+      housing — an insurance-and-tax stress gauge that rose fast in Florida
+      post-2022 as HOAs, property insurance, and assessments hit. If owner
+      cost burden is climbing while your acquisition thesis assumes "owners
+      are comfortable," that's a reprice-risk signal for the for-sale market.
+    tags: [cost_burden, owner, affordability, insurance, property_tax]
+    notes: >
+      CHAS "owner" includes both mortgaged and free-and-clear. In Florida
+      this number tracks insurance-crisis severity — a jump of several
+      points in a single vintage usually means property-insurance premiums
+      or HOA assessments spiked.
+
+  - key: hud_chas_renter_households_below_80ami
+    label: Renter Households at ≤80% AMI
+    full_title: CHAS — Renter Households at or Below 80% HAMFI — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/chas?type=3&stateId=12&entityId=57&year={year}
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county, place, tract]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    chas_params:
+      type: 3
+      state_id: 12
+      entity_id: 57
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        chas_params:
+          type: 2
+          state_id: 12
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        chas_params:
+          type: 1
+    derivation:
+      numerator: [A2, A5, A8]
+      denominator: null
+      multiply_by: 1
+    python_snippet: |
+      """
+      HUD CHAS — Count of renter households at ≤80% HAMFI (HUD's Area
+      Median Family Income). The demand pool for voucher / LIHTC / Section 8.
+      Hillsborough County (primary) + Florida + US (benchmarks). Five most
+      recent ACS 5-year vintages.
+      Source: HUD USER CHAS API.
+
+      Derivation:
+        A2 = renter households at ≤30% HAMFI (extremely low)
+        A5 = renter households at 30-50% HAMFI (very low)
+        A8 = renter households at 50-80% HAMFI (low)
+        count = A2 + A5 + A8
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      def count(params, year):
+          url = f"https://www.huduser.gov/hudapi/public/chas?year={year}&{params}"
+          row = requests.get(url, headers=headers, timeout=30).json()[0]
+          # CHAS API returns counts as strings — cast before arithmetic.
+          return int(float(row["A2"]) + float(row["A5"]) + float(row["A8"]))
+
+      for year in ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]:
+          print(year,
+                "Hillsborough:", count("type=3&stateId=12&entityId=57", year),
+                "FL:",            count("type=2&stateId=12",             year),
+                "US:",            count("type=1",                         year))
+    why_it_matters: >
+      The size of the qualifying demand pool for every affordable-housing
+      program in the county. If you're underwriting voucher, LIHTC, or
+      workforce-housing strategies, this is your addressable market.
+      Benchmarked against Florida + US so you can tell whether Hillsborough
+      has a proportionally bigger or smaller eligible renter base than the
+      surrounding baseline — relevant for voucher-concentration risk and
+      for scoping affordable inventory gaps.
+    tags: [renter, demand_pool, ami, lihtc, voucher, affordability]
+    notes: >
+      Count metric — renders in indexed mode on the detail chart (first
+      vintage = 100) to keep the Hillsborough line legible against Florida
+      and US totals that sit an order of magnitude higher. CHAS HAMFI is
+      HUD's own adjusted AMI, not identical to ACS median household income.
+
+  - key: hud_chas_renter_severe_housing_problems
+    label: Renter Severe Housing Problems
+    full_title: CHAS — Renter Households with Any Severe Housing Problem — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/chas?type=3&stateId=12&entityId=57&year={year}
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, county, place, tract]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    chas_params:
+      type: 3
+      state_id: 12
+      entity_id: 57
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        chas_params:
+          type: 2
+          state_id: 12
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        chas_params:
+          type: 1
+    derivation:
+      numerator: C2
+      denominator: A17
+      multiply_by: 100
+    python_snippet: |
+      """
+      HUD CHAS — Renter households with any of 4 SEVERE housing problems
+      (lacks complete kitchen, lacks complete plumbing, severely overcrowded
+      = >1.5 occupants/room, or severely cost-burdened = >50% of income),
+      as % of all renter households. Hillsborough County (primary) + Florida
+      + US (benchmarks). Five most recent ACS 5-year vintages.
+      Source: HUD USER CHAS API.
+
+      Derivation:
+        C2  = renter households with ≥1 of 4 severe housing problems
+        A17 = renter households total
+        rate = C2 / A17 * 100
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      def rate(params, year):
+          url = f"https://www.huduser.gov/hudapi/public/chas?year={year}&{params}"
+          row = requests.get(url, headers=headers, timeout=30).json()[0]
+          # CHAS API returns counts as strings — cast before arithmetic.
+          return float(row["C2"]) / float(row["A17"]) * 100
+
+      for year in ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]:
+          print(year,
+                "Hillsborough:", round(rate("type=3&stateId=12&entityId=57", year), 1),
+                "FL:",            round(rate("type=2&stateId=12",             year), 1),
+                "US:",            round(rate("type=1",                         year), 1))
+    why_it_matters: >
+      The distress signal that cost burden alone doesn't catch. A unit with
+      bad plumbing or a kitchen the tenant can't cook in is a housing
+      problem before rent-to-income even enters the conversation. This
+      metric captures those plus severe cost burden in one number — a
+      broader measure of "tenants living in unacceptable conditions."
+      Above ~30% is a wide renter pool that reads as a rehab-opportunity
+      signal or a concentration-of-distress risk depending on which side
+      of the deal you're on.
+    tags: [cost_burden, renter, unit_quality, overcrowding, housing_problems]
+    notes: >
+      CHAS's "severe housing problems" is a superset of severe cost burden
+      — it includes cost burden >50% AS WELL AS unit-quality issues
+      (kitchen, plumbing, overcrowding). Readers looking for pure rent
+      distress should check hud_chas_renter_severe_cost_burden; this metric
+      is the broader distress number that also flags below-code units.
+
+  - key: hud_chas_extremely_low_income_renters
+    label: Extremely Low-Income Renter Households
+    full_title: CHAS — Renter Households at ≤30% HAMFI — Hillsborough County, FL
+    source_key: hud
+    access: api
+    api_endpoint: https://www.huduser.gov/hudapi/public/chas?type=3&stateId=12&entityId=57&year={year}
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county, place, tract]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "1205799999"
+    chas_params:
+      type: 3
+      state_id: 12
+      entity_id: 57
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        chas_params:
+          type: 2
+          state_id: 12
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        chas_params:
+          type: 1
+    derivation:
+      numerator: A2
+      denominator: null
+      multiply_by: 1
+    python_snippet: |
+      """
+      HUD CHAS — Count of renter households at ≤30% HAMFI (HUD's Area
+      Median Family Income). The priority-tenant pool for voucher / Section 8
+      / LIHTC 30% set-asides. A subset of the ≤80% pool tracked by
+      hud_chas_renter_households_below_80ami, but this is the specifically
+      extremely-low-income slice that HUD programs prioritize first.
+      Hillsborough County (primary) + Florida + US (benchmarks). Five most
+      recent ACS 5-year vintages.
+      Source: HUD USER CHAS API.
+
+      Derivation:
+        A2 = renter households at ≤30% HAMFI
+      """
+      import os
+      import requests
+
+      HUD_API_KEY = os.environ["HUD_API_KEY"]
+      headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
+
+      def count(params, year):
+          url = f"https://www.huduser.gov/hudapi/public/chas?year={year}&{params}"
+          row = requests.get(url, headers=headers, timeout=30).json()[0]
+          # CHAS API returns counts as strings — cast before arithmetic.
+          return int(float(row["A2"]))
+
+      for year in ["2018-2022", "2017-2021", "2016-2020", "2015-2019", "2014-2018"]:
+          print(year,
+                "Hillsborough:", count("type=3&stateId=12&entityId=57", year),
+                "FL:",            count("type=2&stateId=12",             year),
+                "US:",            count("type=1",                         year))
+    why_it_matters: >
+      The priority-tenant pool. Every HUD rental program — voucher, Section 8,
+      LIHTC 30% basis bonus, Section 202/811 — uses this line as the first
+      eligibility check. Size of this pool tells you how many households
+      in the county are HUD-priority-eligible; trend tells you whether
+      deep-affordable demand is compressing or expanding. If you're
+      underwriting a voucher-concentrated strategy, this is your
+      addressable universe.
+    tags: [renter, priority, extremely_low, ami, voucher, section_8, lihtc]
+    notes: >
+      Count metric — renders in indexed mode on the detail chart. Subset
+      of the ≤80% AMI pool; pair with hud_chas_renter_households_below_80ami
+      to see how much of the total affordable-eligible renter base sits
+      in the extremely-low slice specifically. Excludes owner households
+      at ≤30% AMI (those show up in the A1 cell and aren't featured here).
