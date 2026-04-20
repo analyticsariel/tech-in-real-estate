@@ -1,0 +1,887 @@
+# HMDA dataset catalog for TiRE
+# =============================================================================
+# Per-source dataset catalog for the CFPB Home Mortgage Disclosure Act (HMDA)
+# Data Browser (https://ffiec.cfpb.gov/data-browser). Top-tier source entry
+# lives in agents/data/sources.yaml under key=hmda. Sample snapshots live at
+# site/data/source-samples/hmda/{dataset_key}.json and are produced by
+# agents/sources/hmda.py via agents/sources/snapshot.py.
+#
+# Schema: docs/plans/04-prd.md appendix A (locked Sprint 4), extended in
+# Sprint 8 with the additive benchmark_geos[] field. Sprint 14 swaps geo grain
+# from Tampa MSA to Hillsborough County, expands from 2 → 14 entries, and
+# carries benchmark_geos[] with Florida + US on every entry.
+#
+# -----------------------------------------------------------------------------
+# Source: CFPB HMDA Data Browser aggregations endpoint
+#   https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations
+# No API key required. One GET per (geo, year) pair; aggregation response
+# carries {count, sum} per filter bucket. `sum` is the loan amount dollars —
+# unlocks loan-volume + average-loan-amount metrics with zero extra calls
+# (decision #92).
+#
+# Featured geography: Hillsborough County, Florida (FIPS 12057). Swapped from
+# Tampa MSA (45300) per decision #89 for cross-source comparability with
+# Census / Realtor / Redfin / Zillow, all of which sit at the same county.
+#
+# Benchmark geographies: every entry declares benchmark_geos[] with Florida
+# (state, code "FL") + United States (national, code "1"). HMDA's `states`
+# filter takes two-letter abbreviation, not FIPS — the `code` field is
+# opaque-to-catalog per decision #90; fetcher in agents/sources/hmda.py maps
+# level → predicate. Cross-source geo_key ("state_12") stays FIPS-based for
+# downstream joins.
+#
+# Year span: 2018–2024 (7 annual observations per series) per decision #91.
+# Supersedes Sprint 5 / decision #53's 2019–2023 window. 2024 LAR loaded
+# 2026-04-19; 2025 LAR expected summer 2026.
+#
+# -----------------------------------------------------------------------------
+# Why aggregations, not raw LAR:
+#   HMDA's Loan/Application Record (LAR) CSVs are ~2B rows across all years —
+#   unusable at catalog scale. The Data Browser aggregation API returns
+#   {count, sum} per categorical bucket via simple query-string filters. See
+#   decisions #53 + #92.
+#
+# Response shape:
+#   {
+#     "parameters": {...},
+#     "aggregations": [{"count": <int>, "sum": <float>, "<group_field>": "..."}, ...],
+#     "servedFrom": "cache" | "db"
+#   }
+#
+# Derivation types (implemented in agents/sources/hmda.py DATASET_CONFIG):
+#   - count            : aggregations[0].count — raw count
+#   - denial_rate      : count[action=3] / sum(count[action in 1..5]) × 100
+#   - share            : count[numerator_filter] / count[denominator_filter] × 100
+#                        (two API calls per geo per year)
+#   - sum_dollars      : aggregations[0].sum / 1e9 (billions)
+#   - avg_loan_amount  : aggregations[0].sum / aggregations[0].count (dollars)
+#   - subgroup_denial_rate : denial_rate formula plus a subgroup filter
+#                            (e.g. races=Black or African American)
+#
+# -----------------------------------------------------------------------------
+# Filters NOT available at aggregations grain (silently no-op — decision #93):
+#   occupancy_types, hoepa_statuses, open_end_line_of_credits, preapprovals,
+#   business_or_commercial_purposes, ages. Investor-property share, HELOC
+#   share, high-cost flag, preapproval funnel, and age splits are out of scope
+#   for this catalog. Future raw-LAR pipeline revisits.
+#
+# To add a dataset:
+#   1. Confirm the filter field is exposed on the aggregations endpoint
+#      (test a direct GET against the URL — see decision #93 for the
+#      confirmed no-op list).
+#   2. Verify data fills at county level for Hillsborough (counties=12057).
+#   3. Fill every field per appendix A schema. why_it_matters required.
+#   4. benchmark_geos[] block is identical across HMDA entries (FL + US).
+#   5. Add the matching DATASET_CONFIG entry in agents/sources/hmda.py so the
+#      fetch module knows which observation type + filters to use.
+#   6. Add to this file in the PR that uses it.
+# =============================================================================
+
+datasets:
+
+  # ---------------------------------------------------------------------------
+  # Credit access (3 metrics) — "is credit flowing?"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_originations_count
+    label: HMDA Originations
+    full_title: HMDA Loan Originations, Hillsborough County, FL (annual count)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Originations — Hillsborough County, FL, annual count of originated mortgage loans.
+      Source: CFPB Home Mortgage Disclosure Act Data Browser (no API key).
+      Swap counties=12057 → states=FL or drop the geo filter for Florida / US benchmarks.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      aggregations = response.json()["aggregations"]
+      originations = aggregations[0]["count"] if aggregations else 0
+      print(f"{YEAR} Hillsborough County originations: {originations:,}")
+    why_it_matters: >
+      FRED tells you what rate banks are quoting; this tells you how many
+      Hillsborough borrowers actually closed. When originations fall off a
+      cliff, it's the flow signal that leads the price signal — buy-side
+      demand softens before sellers cut list. Benchmark against Florida and
+      US: if Tampa originations are dropping faster than the state, your
+      market is cooling on its own, not just riding a national cycle.
+    tags: [mortgage, credit, originations, annual, county, hmda]
+    notes: >
+      action_taken=1 is "Loan originated" per HMDA's action_taken code list.
+      Fetch module loops 2018–2024 (7 years) and writes one {date, value}
+      observation per year with date=YYYY-12-31. Indexed mode on /metric page
+      (first year = 100) because US originations (~6M) would otherwise
+      flatten Hillsborough (~30k) to a horizontal smear.
+
+  - key: hmda_application_count
+    label: HMDA Applications
+    full_title: HMDA Mortgage Applications, Hillsborough County, FL (annual count)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1,2,3,4,5
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Applications — Hillsborough County, FL, annual count of mortgage apps filed.
+      Sums action_taken in {1..5}: originated + approved-not-accepted + denied +
+      withdrawn + closed-for-incompleteness. Excludes purchased loans (6) and
+      preapproval requests (7/8).
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1,2,3,4,5"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      applications = sum(row["count"] for row in response.json()["aggregations"])
+      print(f"{YEAR} Hillsborough County applications: {applications:,}")
+    why_it_matters: >
+      Applications lead originations by about a quarter — borrowers file first,
+      close second. Watch this before the originations line moves: if apps are
+      cliff-diving while originations look stable, the next quarter's closing
+      volume is already pre-written. Vs FL and US: when Hillsborough apps fall
+      faster than the state, it's a local demand story — jobs, migration,
+      affordability — not just the macro rate cycle.
+    tags: [mortgage, credit, applications, demand, annual, county, hmda]
+    notes: >
+      action_taken codes summed: 1 (originated), 2 (approved not accepted),
+      3 (denied), 4 (withdrawn), 5 (closed for incompleteness). Matches HMDA's
+      standard "applications received" convention. Indexed mode on /metric
+      page (first year = 100) for same reason as originations_count.
+
+  - key: hmda_denial_rate
+    label: HMDA Denial Rate
+    full_title: HMDA Mortgage Application Denial Rate, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1,2,3,4,5
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Denial Rate — Hillsborough County, FL, annual % of apps denied.
+      Denial rate = count(action=3) / sum(count where action in {1,2,3,4,5}).
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1,2,3,4,5"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["actions_taken"]: row["count"] for row in response.json()["aggregations"]}
+      denied = buckets.get("3", 0)
+      total = sum(buckets.values())
+      rate = 100 * denied / total if total else 0.0
+      print(f"{YEAR} Hillsborough denial rate: {rate:.1f}% ({denied:,} of {total:,})")
+    why_it_matters: >
+      Rising denial rates mean lenders are tightening — that's a leading read
+      on how hard your next refi exit is going to be, and how much buyer
+      demand evaporates before the Fed's rate move shows up in Redfin's
+      weekly price feed. Versus FL + US: when Hillsborough denials climb
+      faster than the state, local underwriting is reacting to something
+      specific (insurance loss, condo assessments, migration reversal).
+    tags: [mortgage, credit, denial, underwriting, annual, county, hmda]
+    notes: >
+      Denial rate = count(action_taken=3) / sum(count where action_taken in
+      {1,2,3,4,5}). Action codes — 1: originated, 2: approved not accepted,
+      3: denied, 4: withdrawn, 5: closed for incompleteness. Excludes 6
+      (purchased — already counted as origination by the originating lender)
+      and 7/8 (preapproval requests — different funnel). Standard HMDA
+      convention. Fetch loops 2018–2024.
+
+  # ---------------------------------------------------------------------------
+  # Loan purpose / refi cycle (3 metrics) — "what are borrowers doing?"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_purchase_share
+    label: HMDA Purchase Share
+    full_title: HMDA Purchase Loans as Share of Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_purposes=1,31,32
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Purchase Share — % of originations that are home-purchase loans
+      (vs. refi or cash-out refi). Purchase + refi + cash-out refi = denominator.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_purposes=1,31,32"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["loan_purposes"]: row["count"] for row in response.json()["aggregations"]}
+      purchase = buckets.get("1", 0)
+      total = sum(buckets.values())
+      share = 100 * purchase / total if total else 0.0
+      print(f"{YEAR} Hillsborough purchase share: {share:.1f}%")
+    why_it_matters: >
+      When rates are low, the refi line takes over and purchase share craters;
+      when rates are high, refi dies and purchase is most of what's left. The
+      swing between the two is the cleanest read on where the mortgage market
+      is in the cycle. Versus FL + US: Hillsborough running higher purchase
+      share than the nation means net in-migration is still pulling transaction
+      volume toward real sales rather than existing-owner refinance activity.
+    tags: [mortgage, purchase, refinance, cycle, annual, county, hmda]
+    notes: >
+      loan_purposes codes — 1: home purchase, 31: refinance, 32: cash-out
+      refinance. Home improvement (2) and other/NA (4,5) excluded from the
+      denominator to isolate the purchase-vs-refinance cycle mix. Multi-value
+      filter returns grouped aggregations; fetcher extracts purchase count
+      and sums denominator from the same response.
+
+  - key: hmda_refi_count
+    label: HMDA Refi Originations
+    full_title: HMDA Refinance Loan Originations, Hillsborough County, FL (annual count)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_purposes=31,32
+    frequency: annual
+    units: count
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Refi Originations — Hillsborough County, FL, annual count of refi
+      and cash-out refi loans (loan_purposes in {31, 32}).
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_purposes=31,32"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      refis = sum(row["count"] for row in response.json()["aggregations"])
+      print(f"{YEAR} Hillsborough refi originations: {refis:,}")
+    why_it_matters: >
+      The most rate-sensitive line on the page. When the 30-year drops 50 bps,
+      this line explodes; when it climbs 50 bps, this line collapses. Tracks
+      the health of existing-owner equity extraction and rate-cycle timing.
+      Versus FL + US: when Hillsborough refis swing harder than the nation,
+      you're seeing the concentrated effect of Florida's above-average equity
+      cushion meeting rate changes.
+    tags: [mortgage, refinance, cycle, rate-sensitive, annual, county, hmda]
+    notes: >
+      Sums loan_purposes 31 (refinance) + 32 (cash-out refinance). Action_taken
+      limited to 1 (originated) — denials + withdrawals of refi apps live
+      under hmda_denial_rate and are not counted here. Indexed mode on /metric
+      page since US refi counts (~3M in high-rate years, ~10M in low-rate)
+      would otherwise flatten Hillsborough's sub-10k line.
+
+  - key: hmda_cashout_refi_share
+    label: HMDA Cash-Out Refi Share
+    full_title: HMDA Cash-Out Refi as Share of All Refinances, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_purposes=31,32
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Cash-Out Refi Share — cash-out refis / all refis in Hillsborough County.
+      loan_purposes: 31 = rate-and-term refi, 32 = cash-out refi.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_purposes=31,32"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["loan_purposes"]: row["count"] for row in response.json()["aggregations"]}
+      cashout = buckets.get("32", 0)
+      total_refi = cashout + buckets.get("31", 0)
+      share = 100 * cashout / total_refi if total_refi else 0.0
+      print(f"{YEAR} Hillsborough cash-out refi share: {share:.1f}%")
+    why_it_matters: >
+      When owners pull equity en masse, it reads two ways: either they've got
+      real appreciation to cash out against, or they need liquidity and the
+      house is the bank. Either way, cash-out share climbing above the
+      rate-term refi line is a late-cycle signal. Benchmark against FL + US:
+      Florida has historically run hotter on cash-out share (retirement
+      liquidity, investor equity redeployment) — Hillsborough tracking above
+      even that baseline is concentrated equity extraction worth watching
+      against Redfin's price-cut trajectory.
+    tags: [mortgage, refinance, cashout, equity, annual, county, hmda]
+    notes: >
+      Numerator = loan_purposes=32 (cash-out refi); denominator = 31 + 32
+      (all refis). Rate-term refis (31) are rate-play; cash-out (32) are
+      equity-extraction. Ratio collapses if total_refi is too small in a
+      given year (2023's high-rate environment compressed refi volume
+      substantially — watch for noise when the line gets thin).
+
+  # ---------------------------------------------------------------------------
+  # Product mix (3 metrics) — "who's financing what way?"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_fha_share
+    label: HMDA FHA Share
+    full_title: HMDA FHA Loans as Share of All Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_types=1,2,3,4
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA FHA Share — FHA-insured loans as % of all originations in
+      Hillsborough County. loan_types: 1=conventional, 2=FHA, 3=VA, 4=USDA/RHS.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_types=1,2,3,4"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["loan_types"]: row["count"] for row in response.json()["aggregations"]}
+      fha = buckets.get("2", 0)
+      total = sum(buckets.values())
+      share = 100 * fha / total if total else 0.0
+      print(f"{YEAR} Hillsborough FHA share: {share:.1f}%")
+    why_it_matters: >
+      FHA is the 3.5%-down, government-backed, low-credit-floor product — it's
+      where the marginal affordability buyer lives. When FHA share climbs,
+      the median borrower in your county is leaning on federal backing to
+      close, which is a leading affordability-stress signal and a soft-landing
+      risk if rates move against them at refi. Versus FL + US: Hillsborough
+      tracking higher than the national FHA share means the entry-level
+      market's doing heavier lifting than the conventional market here.
+      Purchase-vs-refi cycle effects live in hmda_purchase_share; this metric
+      isolates product mix at the origination level.
+    tags: [mortgage, product-mix, fha, affordability, annual, county, hmda]
+    notes: >
+      Numerator = loan_types=2 (FHA); denominator = all originations by
+      loan type (1 conventional, 2 FHA, 3 VA, 4 USDA/RHS). actions_taken=1
+      + loan_types=1,2,3,4 is 2 non-geo filter criteria — the aggregations
+      endpoint's maximum (decision #94). Purpose (purchase vs refi) not
+      filterable here without tripping the 3-criteria limit; purchase-cycle
+      signal lives in hmda_purchase_share. Multi-value filter returns grouped
+      response; fetcher extracts FHA numerator / sums denominator.
+
+  - key: hmda_va_share
+    label: HMDA VA Share
+    full_title: HMDA VA Loans as Share of All Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_types=1,2,3,4
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA VA Share — VA-guaranteed loans as % of all originations in
+      Hillsborough County. loan_types=3 is VA.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_types=1,2,3,4"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["loan_types"]: row["count"] for row in response.json()["aggregations"]}
+      va = buckets.get("3", 0)
+      total = sum(buckets.values())
+      share = 100 * va / total if total else 0.0
+      print(f"{YEAR} Hillsborough VA share: {share:.1f}%")
+    why_it_matters: >
+      VA loans are zero-down, no-PMI, veteran-only. Their share is a function
+      of local military presence and active-duty buyer demand, not
+      affordability cycles — makes it a stable structural indicator rather
+      than a cyclical one. Tampa's MacDill AFB anchors unusually high VA
+      share here; watch FL + US deltas to see whether base-driven demand
+      is holding up or the military buyer is being priced out.
+    tags: [mortgage, product-mix, va, military, annual, county, hmda]
+    notes: >
+      Numerator = loan_types=3 (VA-guaranteed); denominator identical to
+      FHA share. Shares same API endpoint template as hmda_fha_share — fetch
+      module caches the response across FHA / VA / conventional shares
+      (decision #92). Filter budget capped at actions + loan_types per
+      decision #94.
+
+  - key: hmda_conventional_share
+    label: HMDA Conventional Share
+    full_title: HMDA Conventional Loans as Share of All Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_types=1,2,3,4
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Conventional Share — conventional (non-government-backed) loans as
+      % of all originations in Hillsborough County. loan_types=1.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_types=1,2,3,4"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["loan_types"]: row["count"] for row in response.json()["aggregations"]}
+      conv = buckets.get("1", 0)
+      total = sum(buckets.values())
+      share = 100 * conv / total if total else 0.0
+      print(f"{YEAR} Hillsborough conventional share: {share:.1f}%")
+    why_it_matters: >
+      Conventional is everything that isn't FHA, VA, or USDA — the "real
+      credit" product that requires 5–20% down and prime-adjacent credit.
+      Its share is the inverse of government-backed product penetration:
+      when conventional dominates, the borrower base is stronger; when it
+      recedes, the marginal borrower is using federal backing to get across.
+      Versus FL + US: Hillsborough running below the US conventional line
+      is the affordability-stress read; running above is the opposite.
+    tags: [mortgage, product-mix, conventional, annual, county, hmda]
+    notes: >
+      Numerator = loan_types=1 (conventional); denominator identical to
+      FHA / VA shares. Shares API endpoint template with the other two
+      product-mix metrics; fetch module caches across them. Filter budget
+      capped at actions + loan_types per decision #94.
+
+  # ---------------------------------------------------------------------------
+  # Volume & size (2 metrics) — "how much money is moving?"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_loan_volume
+    label: HMDA Loan Volume
+    full_title: HMDA Total Loan Origination Volume, Hillsborough County, FL (annual $B)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1
+    frequency: annual
+    units: billions
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Loan Volume — total $ originated in Hillsborough County, billions.
+      Aggregation response's `sum` field is loan amount dollars.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      volume_dollars = response.json()["aggregations"][0]["sum"]
+      volume_billions = volume_dollars / 1e9
+      print(f"{YEAR} Hillsborough loan volume: ${volume_billions:.1f}B")
+    why_it_matters: >
+      Volume in dollars is count × average loan size — it moves when either
+      moves. When volume falls but count holds, loan sizes are shrinking
+      (affordability pressure); when count falls but volume holds, the
+      remaining buyers are at the higher end (selective market). Versus FL
+      + US: Hillsborough's volume trajectory vs. state/nation tells you
+      whether capital is flowing into this market faster or slower than
+      the broader real-estate economy.
+    tags: [mortgage, volume, capital-flow, annual, county, hmda]
+    notes: >
+      Uses the `sum` field in the aggregation response (decision #92). Divided
+      by 1e9 to present as billions. Unit `billions` is new in Sprint 14 —
+      MetricChart.tsx formatByUnit() adds a case that appends "$B" to tick
+      labels. Raw mode on /metric page (not indexed) since state/nation
+      volumes are within a meaningful order of magnitude.
+
+  - key: hmda_avg_purchase_loan_amount
+    label: HMDA Avg Purchase Loan
+    full_title: HMDA Average Purchase Loan Amount, Hillsborough County, FL (annual $)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&loan_purposes=1
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Average Purchase Loan Amount — Hillsborough County, FL.
+      sum / count on purchase originations only (loan_purposes=1).
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&loan_purposes=1"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      agg = response.json()["aggregations"][0]
+      avg = agg["sum"] / agg["count"] if agg["count"] else 0
+      print(f"{YEAR} Hillsborough avg purchase loan: ${avg:,.0f}")
+    why_it_matters: >
+      Mean, not median — sensitive to the high end of the distribution. But
+      that sensitivity is useful: when the mean moves up fast while Redfin's
+      median sale price moves slowly, it's jumbo buyers doing the work
+      (wealthy migrants, move-up trades). When the mean stagnates while
+      prices climb, the low end is pulling harder than the top. Versus FL
+      + US: Hillsborough tracking below the state mean is the affordability
+      story; above it is the migration-pressure story.
+    tags: [mortgage, loan-size, purchase, annual, county, hmda]
+    notes: >
+      Mean = sum / count on purchase (loan_purposes=1) originations only
+      (actions_taken=1). Mean not median — median loan amount would require
+      raw LAR (per decision #53). Purchase-only to decouple from refi
+      cash-out inflation effects. Raw mode on /metric page.
+
+  # ---------------------------------------------------------------------------
+  # Property type (2 metrics) — "small-multi and manufactured financeability"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_small_multi_share
+    label: HMDA Small Multi Share
+    full_title: HMDA 2–4 Unit Loans as Share of All Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&total_units=2,3,4
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Small-Multi Share — 2-to-4-unit property loans as % of all
+      originations in Hillsborough County. Small-multi = duplex / triplex /
+      quad, the first step beyond single-family for many operators.
+      """
+      import requests
+
+      YEAR = 2024
+
+      num_url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&total_units=2,3,4"
+      )
+      den_url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1"
+      )
+      num = requests.get(num_url, timeout=30).json()["aggregations"][0]["count"]
+      den = requests.get(den_url, timeout=30).json()["aggregations"][0]["count"]
+      share = 100 * num / den if den else 0.0
+      print(f"{YEAR} Hillsborough small-multi share: {share:.2f}%")
+    why_it_matters: >
+      2-to-4-unit is where house hackers and small-portfolio operators live —
+      the product most relevant to TiRE's audience (tech investors with
+      1–3 properties scaling up). Its share is typically a fraction of a
+      percent, and the delta against FL + US tells you whether your county
+      is competitive for this niche or dominated by single-family. Rising
+      share usually tracks with missing-middle zoning wins and 2-to-4-unit
+      financing-program uptake.
+    tags: [mortgage, property-type, small-multi, house-hacking, annual, county, hmda]
+    notes: >
+      total_units=2,3,4 selects 2, 3, or 4-unit properties (the conforming
+      small-multi bucket). Two-call metric: numerator filters on total_units,
+      denominator is all originations. Share typically < 2% — watch axis
+      scaling on charts. 5+ unit multi-family (total_units=5-24, 25-49,
+      50-99, >=100) is a different financing market (commercial/agency
+      multifamily) and warrants its own metric if reader demand surfaces.
+
+  - key: hmda_manufactured_share
+    label: HMDA Manufactured Share
+    full_title: HMDA Manufactured Home Loans as Share of All Originations, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1&construction_methods=2
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Manufactured Share — manufactured-home loans as % of all
+      originations in Hillsborough County. construction_methods=2 = manufactured;
+      =1 = site-built.
+      """
+      import requests
+
+      YEAR = 2024
+
+      num_url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1&construction_methods=2"
+      )
+      den_url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1"
+      )
+      num = requests.get(num_url, timeout=30).json()["aggregations"][0]["count"]
+      den = requests.get(den_url, timeout=30).json()["aggregations"][0]["count"]
+      share = 100 * num / den if den else 0.0
+      print(f"{YEAR} Hillsborough manufactured share: {share:.2f}%")
+    why_it_matters: >
+      Manufactured housing is the cheapest way to get into homeownership in
+      many US counties, and it's an underbuilt category Florida has
+      structurally more of than most states. A rising manufactured share is
+      often a demand-side story: site-built supply priced out, buyers step
+      down to manufactured to get under the affordability line. Versus FL
+      + US: Hillsborough tracking above the national share with Florida
+      even higher above it signals Florida's manufactured-friendly zoning
+      + age-restricted community inventory.
+    tags: [mortgage, property-type, manufactured, affordability, annual, county, hmda]
+    notes: >
+      construction_methods=2 (manufactured home). Two-call metric: numerator
+      on manufactured, denominator on all originations. Share is typically
+      very small (< 2%) in dense counties; interpret slope, not absolute.
+
+  # ---------------------------------------------------------------------------
+  # Fair lending (1 metric) — "is access equitable?"
+  # ---------------------------------------------------------------------------
+
+  - key: hmda_black_applicant_denial_rate
+    label: HMDA Black-Applicant Denial Rate
+    full_title: HMDA Mortgage Application Denial Rate, Black Applicants, Hillsborough County, FL (annual %)
+    source_key: hmda
+    access: api
+    api_endpoint: https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations?years={year}&counties=12057&actions_taken=1,2,3,4,5&races=Black%20or%20African%20American
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, metro, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      HMDA Black-Applicant Denial Rate — denial rate for Black applicants in
+      Hillsborough County. Same formula as hmda_denial_rate plus a
+      races=Black or African American filter.
+      """
+      import requests
+
+      YEAR = 2024
+      url = (
+          "https://ffiec.cfpb.gov/v2/data-browser-api/view/aggregations"
+          f"?years={YEAR}&counties=12057&actions_taken=1,2,3,4,5"
+          "&races=Black or African American"
+      )
+      response = requests.get(url, timeout=30)
+      response.raise_for_status()
+      buckets = {row["actions_taken"]: row["count"] for row in response.json()["aggregations"]}
+      denied = buckets.get("3", 0)
+      total = sum(buckets.values())
+      rate = 100 * denied / total if total else 0.0
+      print(f"{YEAR} Hillsborough Black-applicant denial rate: {rate:.1f}%")
+    why_it_matters: >
+      A single fair-lending metric, reported against the same FL + US
+      benchmarks as every other HMDA line. Tells the reader what the denial
+      rate looks like for one applicant group — no composite index, no
+      gap-of-gaps math. Compared cleanly across geographies, the question
+      the data can answer is: is access in Hillsborough converging toward,
+      or diverging from, the state and national patterns for this group?
+      Read alongside hmda_denial_rate to see the same applicant pool's
+      experience against the overall pool.
+    tags: [mortgage, fair-lending, denial, race, annual, county, hmda]
+    notes: >
+      races=Black or African American uses the "derived_race" label value
+      (not a numeric code). Denial formula identical to hmda_denial_rate —
+      action_taken=3 / sum(action_taken in 1..5) — but restricted to the
+      Black-applicant subset. One API call per (geo, year) — not a two-call
+      ratio. Interpret slope + benchmark deltas over time; absolute level
+      depends heavily on applicant mix + reporting practices that shift
+      across lenders.
