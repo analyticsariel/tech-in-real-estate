@@ -1,0 +1,835 @@
+# FEMA (OpenFEMA v2) dataset catalog for TiRE
+# =============================================================================
+# Per-source dataset catalog under the sources.yaml entry `fema`. Each entry
+# declares one queryable OpenFEMA v2 dataset + aggregation rule, the featured
+# Tampa geo we snapshot, and the canonical Python snippet we show on /data.
+#
+# Browse source: https://www.fema.gov/about/openfema
+# API base:      https://www.fema.gov/api/open/v2/{DatasetName}
+#
+# -----------------------------------------------------------------------------
+# Schema: locked in docs/plans/04-prd.md appendix A (Sprint 4), extended in
+# Sprint 8 with the additive benchmark_geos[] field (decision #65). Sprint 16
+# adopts benchmark_geos[] for FEMA verbatim and expands from 4 → 12 entries
+# across 4 categories (decisions #110–114).
+#
+# -----------------------------------------------------------------------------
+# Notes on OpenFEMA v2 conventions:
+#   - OData-style query params: $filter, $top (max 10,000), $skip (paginate),
+#     $inlinecount=allpages (returns total match count in metadata).
+#   - Filter operators: eq, ne, lt, le, gt, ge, and, or, substringof.
+#   - Date literals are quoted ISO-8601 strings, e.g.
+#     `declarationDate ge '2010-01-01T00:00:00.000Z'`.
+#   - Keyless. Polite: rate-limit to sequential paginated GETs, don't parallel-
+#     hammer (per-OpenFEMA politeness guidance, decision #55).
+#
+# -----------------------------------------------------------------------------
+# Featured geography: Hillsborough County, Florida (FIPS 12057) — unchanged from
+# Sprint 5. No geo swap in Sprint 16 (unlike HUD Sprint 13 or HMDA Sprint 14).
+# See decisions #55 + #110 for the per-dataset county-encoding matrix.
+#
+# featured_geo_code encoding — per dataset, not uniform (decision #55 extended
+# by decision #110 to 5 distinct encodings):
+#
+#   DisasterDeclarationsSummaries               → `fipsCountyCode` = "057"
+#                                                 (3-char zero-padded)
+#   FimaNfipClaims                              → `countyCode`     = "12057"
+#                                                 (5-char state+county)
+#   PublicAssistanceFundedProjectsDetails       → `countyCode`     = "57"
+#                                                 (**unpadded**, no zeros)
+#   HousingAssistanceOwners                     → `county`         =
+#   HousingAssistanceRenters                      "Hillsborough (County)"
+#   RegistrationIntakeIndividualsHouseholdPrograms  (human-readable; state
+#                                                 filter mandatory — NH has
+#                                                 a Hillsborough too)
+#
+# So each entry stores the exact encoding its dataset's filter expects.
+# Catalog stays the source of truth; fetch module (agents/sources/fema.py)
+# maps catalog-key → (entity name, county filter field, state filter field)
+# without inference or normalization.
+#
+# -----------------------------------------------------------------------------
+# Benchmark geographies: every entry declares benchmark_geos[] with Florida
+# (state, code "FL") + United States (national, code "1"). OpenFEMA's state
+# filter takes two-letter abbreviation uniformly; only the *field name* varies
+# (`state` vs `stateAbbreviation`) — decision #111. National predicate is
+# uniform across all datasets: absence of any state / county filter.
+#
+# Cross-source geo_key ("state_12") stays FIPS-based for downstream joins
+# (catalog is source-agnostic per decision #71; per-source quirks live in
+# the fetcher).
+#
+# -----------------------------------------------------------------------------
+# Year window: 2010–2024 (15 years) per decision #112. Replaces Sprint 5's
+# 2006-present window. Captures post-Biggert-Waters NFIP reprice (2012),
+# Sandy (2012), Harvey/Irma (2017), Michael (2018), Ian (2022),
+# Helene/Milton (2024) — the full catastrophe cycle without pre-reform
+# early-cycle crowding. DDS + IHP native histories back to 1953 / 2002 remain
+# accessible via the raw API for any future deep-history pipeline.
+#
+# -----------------------------------------------------------------------------
+# Aggregation lives in the fetch module. OpenFEMA v2 returns event-row data
+# (one record per disaster / claim / registration / project); agents/
+# sources/fema.py rolls these up to the annual headline metric declared by
+# each entry's `units` and `notes`.
+#
+# Datasets whose rows carry no year field (HAO / HAR / RegIntake / PA) rely
+# on a `disasterNumber → fyDeclared` map built from a single DDS prefetch
+# per geo (cached for the batch; decision #113). 3 extra GETs total per
+# full refresh across primary + 2 benchmarks.
+#
+# Two datasets explicitly out of scope for Sprint 16 (decision #114):
+#   - FimaNfipPolicies (72.5M rows; snapshot-date pipeline is a Sprint 17+
+#     data-engineering project).
+#   - HazardMitigationAssistance* (all name variants returned 404 against
+#     OpenFEMA v2 as of 2026-04-20; endpoint appears renamed/removed).
+# =============================================================================
+
+datasets:
+
+  # ---------------------------------------------------------------------------
+  # Disaster frequency (2 metrics) — "how often does FEMA show up here?"
+  # ---------------------------------------------------------------------------
+
+  - key: fema_disaster_declarations_county
+    label: FEMA Disaster Declarations
+    full_title: FEMA Disaster Declarations — Hillsborough County, Florida (annual count of federally declared disasters)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries?$filter=state eq 'FL' and fipsCountyCode eq '{code}' and fyDeclared ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Disaster Declarations — Hillsborough County, Florida, annual count of distinct federally declared disasters.
+      Source: OpenFEMA v2 (keyless). Swap fipsCountyCode='057' for Hillsborough, drop it for FL/US rollups.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries"
+      params = {
+          "$filter": "state eq 'FL' and fipsCountyCode eq '057' and fyDeclared ge 2010",
+          "$top": 10000,
+          "$inlinecount": "allpages",
+      }
+      rows = requests.get(url, params=params, timeout=60).json()["DisasterDeclarationsSummaries"]
+      per_year = defaultdict(set)
+      for rec in rows:
+          per_year[rec["fyDeclared"]].add(rec["disasterNumber"])
+      for year, ids in sorted(per_year.items()):
+          print(f"{year}: {len(ids)} distinct disaster declarations")
+    why_it_matters: >
+      The clearest free read on "how often does FEMA show up here." A county's
+      annual count of federally declared disasters tracks the hurricane, flood,
+      and severe-storm events that insurers price off. Against FL + US
+      benchmarks you can see whether Hillsborough runs hot vs the state and
+      nation — in hurricane years it will, in quiet years it shouldn't.
+    tags: [disaster, federal, declarations, climate, risk, county, annual]
+    notes: >
+      featured_geo_code is the 3-char FEMA county FIPS (DDS field is
+      `fipsCountyCode`). Headline metric is distinct-disasterNumber-per-
+      fyDeclared — DDS row granularity is one row per disaster × county
+      designation, so naive row counts would double-count multi-area events.
+
+  - key: fema_hurricane_declarations_county
+    label: FEMA Hurricane Declarations
+    full_title: FEMA Hurricane Declarations — Hillsborough County, Florida (annual count, hurricane-only subset)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries?$filter=state eq 'FL' and fipsCountyCode eq '{code}' and incidentType eq 'Hurricane' and fyDeclared ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Hurricane Declarations — Hillsborough County, Florida, hurricane-incidentType subset.
+      Shows the Tampa-specific risk: every year with a hurricane declaration is a year that bent the insurance curve.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries"
+      params = {
+          "$filter": "state eq 'FL' and fipsCountyCode eq '057' and incidentType eq 'Hurricane' and fyDeclared ge 2010",
+          "$top": 10000,
+          "$inlinecount": "allpages",
+      }
+      rows = requests.get(url, params=params, timeout=60).json()["DisasterDeclarationsSummaries"]
+      per_year = defaultdict(set)
+      for rec in rows:
+          per_year[rec["fyDeclared"]].add(rec["disasterNumber"])
+      for year, ids in sorted(per_year.items()):
+          print(f"{year}: {len(ids)} hurricane declarations")
+    why_it_matters: >
+      Tampa's disaster story is mostly hurricanes. Splitting hurricane
+      declarations out from the full declaration count isolates the signal
+      that actually drives premium increases, roof replacements, and buyer
+      hesitancy — biological emergencies and severe storms matter but
+      don't dictate homeowners insurance the way a landed hurricane does.
+      Zero-years are legitimate data, not gaps: quiet cycles exist.
+    tags: [hurricane, disaster, declarations, climate, risk, county, annual]
+    notes: >
+      `incidentType eq 'Hurricane'` filters DDS to the hurricane row subset.
+      Expect zero-values for Tampa in quiet years (2013–2016 baseline).
+      Chart renders legitimate zeroes, not nulls. National line will show
+      annual hurricane counts of ~2–15 vs Hillsborough's 0–2.
+
+  # ---------------------------------------------------------------------------
+  # Flood insurance (4 metrics) — NFIP claim volume, cost, severity, and gross
+  # damage. Flood is the peril that actually pays out in Tampa.
+  # ---------------------------------------------------------------------------
+
+  - key: fema_nfip_claims_count_county
+    label: NFIP Flood Claims — Count
+    full_title: NFIP Flood Claims — Hillsborough County, Florida (annual claim count)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/FimaNfipClaims?$filter=state eq 'FL' and countyCode eq '{code}' and yearOfLoss ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      NFIP Flood Claims (count) — Hillsborough County, Florida, annual NFIP flood-insurance claim count.
+      Pagination required — Hillsborough has ~13k claims 2010+; national ~800k.
+      """
+      import requests
+      from collections import Counter
+
+      url = "https://www.fema.gov/api/open/v2/FimaNfipClaims"
+      base = {"$filter": "state eq 'FL' and countyCode eq '12057' and yearOfLoss ge 2010", "$top": 10000}
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["FimaNfipClaims"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      per_year = Counter(r["yearOfLoss"] for r in rows if r.get("yearOfLoss"))
+      for year, count in sorted(per_year.items()):
+          print(f"{year}: {count} NFIP claims")
+    why_it_matters: >
+      Every NFIP claim is a flood that insurers actually paid on. Claim
+      counts by year are the truth-teller for flood frequency: if
+      Hillsborough's volume is stepping up decade over decade while FL + US
+      stay flat, that's local risk drift showing up in policy-level data.
+      Indexed-mode chart (first year = 100) because US claims (~50k/yr)
+      would flatten Hillsborough (~500/yr) to a smear.
+    tags: [nfip, flood, insurance, claims, climate, county, annual]
+    notes: >
+      featured_geo_code is the 5-digit state+county FIPS — NFIP's filter field
+      is `countyCode` (not `fipsCountyCode`). NFIP data lags ~90 days per
+      FEMA docs; 2025 partial-year data excluded by client-side filter.
+
+  - key: fema_nfip_claims_paid_county
+    label: NFIP Flood Claims — Paid
+    full_title: NFIP Flood Claims — Hillsborough County, Florida (annual paid dollars)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/FimaNfipClaims?$filter=state eq 'FL' and countyCode eq '{code}' and yearOfLoss ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      NFIP Flood Claims (paid dollars) — Hillsborough County, Florida, annual NFIP claim payouts.
+      Headline sums building + contents + Increased Cost of Compliance (ICC) per FEMA docs.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/FimaNfipClaims"
+      base = {"$filter": "state eq 'FL' and countyCode eq '12057' and yearOfLoss ge 2010", "$top": 10000}
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["FimaNfipClaims"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      per_year = defaultdict(float)
+      for r in rows:
+          yr = r.get("yearOfLoss")
+          if yr is None: continue
+          per_year[yr] += (
+              (r.get("amountPaidOnBuildingClaim") or 0)
+              + (r.get("amountPaidOnContentsClaim") or 0)
+              + (r.get("amountPaidOnIncreasedCostOfComplianceClaim") or 0)
+          )
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} NFIP paid")
+    why_it_matters: >
+      Dollars settled on NFIP flood policies — the tangible climate bill the
+      local insurance market is absorbing. A year with $200M+ in Hillsborough
+      NFIP payouts is a year that hits every policyholder's next renewal,
+      insured or not (NFIP reinsurance losses flow through to private
+      markets). Benchmark against FL + US: when Tampa's payout share of the
+      state exceeds its population share, Tampa is subsidizing FL's flood-
+      insurance pool in that year.
+    tags: [nfip, flood, insurance, payouts, dollars, climate, county, annual]
+    notes: >
+      Same filter + pagination as fema_nfip_claims_count_county. Sums the
+      three FEMA-documented payment components — building, contents, and
+      ICC. Null amounts treated as 0 (denied / unpaid claim rows exist).
+
+  - key: fema_nfip_avg_claim_paid_county
+    label: NFIP Avg Claim Payout
+    full_title: NFIP Average Claim Payout — Hillsborough County, Florida (paid $ per claim, annual)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/FimaNfipClaims?$filter=state eq 'FL' and countyCode eq '{code}' and yearOfLoss ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      NFIP Avg Claim Payout — Hillsborough County, Florida, severity per claim.
+      Derived as (sum paid) / (claim count) per yearOfLoss.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/FimaNfipClaims"
+      base = {"$filter": "state eq 'FL' and countyCode eq '12057' and yearOfLoss ge 2010", "$top": 10000}
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["FimaNfipClaims"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      totals = defaultdict(lambda: {"paid": 0.0, "n": 0})
+      for r in rows:
+          yr = r.get("yearOfLoss")
+          if yr is None: continue
+          paid = (r.get("amountPaidOnBuildingClaim") or 0) + (r.get("amountPaidOnContentsClaim") or 0) + (r.get("amountPaidOnIncreasedCostOfComplianceClaim") or 0)
+          totals[yr]["paid"] += paid
+          totals[yr]["n"] += 1
+      for year, t in sorted(totals.items()):
+          avg = t["paid"] / t["n"] if t["n"] else 0
+          print(f"{year}: ${avg:,.0f} avg NFIP payout")
+    why_it_matters: >
+      Severity tells a different story than frequency. A year with many
+      small claims reads like a routine flood cycle; a year with fewer
+      larger claims reads like a catastrophic event. When Hillsborough's
+      avg payout spikes vs FL + US in the same year, that's structurally
+      severe damage — the kind that reprices reinsurance and ultimately
+      your homeowners premium.
+    tags: [nfip, flood, insurance, severity, dollars, climate, county, annual]
+    notes: >
+      Division by zero (years with 0 Hillsborough claims) emits null for
+      that year — chart shows gap rather than a misleading zero.
+
+  - key: fema_nfip_building_damage_assessed_county
+    label: NFIP Building Damage Assessed
+    full_title: NFIP Building Damage Assessed — Hillsborough County, Florida (annual gross $)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/FimaNfipClaims?$filter=state eq 'FL' and countyCode eq '{code}' and yearOfLoss ge 2010&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      NFIP Building Damage Assessed — Hillsborough County, Florida, gross building damage (paid + denied).
+      Differs from paid $ by including unpaid / denied claims — a fuller read on structural damage exposure.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/FimaNfipClaims"
+      base = {"$filter": "state eq 'FL' and countyCode eq '12057' and yearOfLoss ge 2010", "$top": 10000}
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["FimaNfipClaims"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      per_year = defaultdict(float)
+      for r in rows:
+          yr = r.get("yearOfLoss")
+          if yr is None: continue
+          per_year[yr] += (r.get("buildingDamageAmount") or 0)
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} gross building damage")
+    why_it_matters: >
+      Gross building damage (paid + denied) is the scope-of-loss number, not
+      the settlement number. A year where gross damage runs hot but paid $
+      runs cool means insurers are denying or under-paying claims —
+      investor-relevant as a signal of coverage-gap risk at your own
+      property. Watch the spread between paid $ and assessed damage over
+      time; widening spreads predict angrier policyholders and
+      coverage-market stress.
+    tags: [nfip, flood, damage, gross, dollars, climate, county, annual]
+    notes: >
+      `buildingDamageAmount` is populated on denied claims too, unlike
+      `amountPaidOnBuildingClaim`. Null values treated as 0.
+
+  # ---------------------------------------------------------------------------
+  # Individual Assistance (4 metrics) — IHP (RegIntake) + HAO + HAR +
+  # registrations count. "When a storm hits, who gets federal checks?"
+  # ---------------------------------------------------------------------------
+
+  - key: fema_ihp_assistance_county
+    label: FEMA IHP Assistance
+    full_title: FEMA Individuals & Households Program — Hillsborough County, Florida (annual grant dollars)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/RegistrationIntakeIndividualsHouseholdPrograms?$filter=state eq 'FL' and county eq '{code}'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "Hillsborough (County)"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA IHP Assistance — Hillsborough County, Florida, annual sum of IHP grants.
+      Source: RegistrationIntakeIndividualsHouseholdPrograms (pre-aggregated — 54x faster than the row-per-registration dataset).
+      Year resolves via a secondary DDS lookup by disasterNumber.
+      """
+      import requests
+      from collections import defaultdict
+
+      # IHP rollups (disaster x city x zip)
+      ri = requests.get(
+          "https://www.fema.gov/api/open/v2/RegistrationIntakeIndividualsHouseholdPrograms",
+          params={"$filter": "state eq 'FL' and county eq 'Hillsborough (County)'", "$top": 10000},
+          timeout=60,
+      ).json()["RegistrationIntakeIndividualsHouseholdPrograms"]
+
+      # Disaster -> fyDeclared lookup
+      dds = requests.get(
+          "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries",
+          params={"$filter": "state eq 'FL' and fyDeclared ge 2010", "$top": 10000,
+                  "$select": "disasterNumber,fyDeclared"},
+          timeout=60,
+      ).json()["DisasterDeclarationsSummaries"]
+      year_of = {r["disasterNumber"]: r["fyDeclared"] for r in dds}
+
+      per_year = defaultdict(float)
+      for r in ri:
+          yr = year_of.get(r["disasterNumber"])
+          if yr is None: continue
+          per_year[yr] += (r.get("ihpAmount") or 0)
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} IHP")
+    why_it_matters: >
+      Federal dollars that flowed directly to Hillsborough households after
+      disasters — rent assistance, repair grants, replacement checks. This
+      is the renters-and-uninsured half of the climate-cost ledger; NFIP
+      captures the homeowner-with-flood-policy half. Watch the ratio of
+      IHP $ to NFIP paid $: when IHP runs hotter, the damage is falling on
+      households without private coverage.
+    tags: [ihp, disaster_assistance, households, grants, dollars, climate, county, annual]
+    notes: >
+      featured_geo_code is the human-readable county string OpenFEMA's
+      HAO/HAR/RegIntake datasets expect. State filter is MANDATORY to
+      disambiguate from New Hampshire's Hillsborough County (decision
+      #110). Year resolves via DDS prefetch (decision #113) — ~54x
+      pagination savings vs the row-per-registration dataset.
+
+  - key: fema_ihp_owner_assistance_county
+    label: FEMA Owner IA
+    full_title: FEMA Individual Assistance to Owners — Hillsborough County, Florida (annual grant dollars)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/HousingAssistanceOwners?$filter=state eq 'FL' and county eq '{code}'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "Hillsborough (County)"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Owner IA — Hillsborough County, Florida, annual Individual Assistance dollars approved for homeowners.
+      Derived from HousingAssistanceOwners + DDS disasterNumber → year map.
+      """
+      import requests
+      from collections import defaultdict
+
+      hao = requests.get(
+          "https://www.fema.gov/api/open/v2/HousingAssistanceOwners",
+          params={"$filter": "state eq 'FL' and county eq 'Hillsborough (County)'", "$top": 10000},
+          timeout=60,
+      ).json()["HousingAssistanceOwners"]
+      dds = requests.get(
+          "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries",
+          params={"$filter": "state eq 'FL' and fyDeclared ge 2010", "$top": 10000,
+                  "$select": "disasterNumber,fyDeclared"},
+          timeout=60,
+      ).json()["DisasterDeclarationsSummaries"]
+      year_of = {r["disasterNumber"]: r["fyDeclared"] for r in dds}
+
+      per_year = defaultdict(float)
+      for r in hao:
+          yr = year_of.get(r["disasterNumber"])
+          if yr is None: continue
+          per_year[yr] += (r.get("totalApprovedIhpAmount") or 0)
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} owner IA")
+    why_it_matters: >
+      Owner IA dollars are federal checks to homeowners for repair,
+      replacement, and temporary-housing costs when insurance doesn't fully
+      cover the damage. If owner IA runs hot in Hillsborough vs FL, it
+      means the county's insured-homeowner coverage gap is wider than the
+      state average — a structural signal about which neighborhoods have
+      the weakest private insurance uptake.
+    tags: [ihp, disaster_assistance, owners, grants, dollars, climate, county, annual]
+    notes: >
+      Only rows with non-null `totalApprovedIhpAmount` contribute — denied
+      applications have null here and are treated as 0.
+
+  - key: fema_ihp_renter_assistance_county
+    label: FEMA Renter IA
+    full_title: FEMA Individual Assistance to Renters — Hillsborough County, Florida (annual grant dollars)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/HousingAssistanceRenters?$filter=state eq 'FL' and county eq '{code}'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "Hillsborough (County)"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Renter IA — Hillsborough County, Florida, annual Individual Assistance dollars approved for renters.
+      Derived from HousingAssistanceRenters + DDS disasterNumber → year map.
+      """
+      import requests
+      from collections import defaultdict
+
+      har = requests.get(
+          "https://www.fema.gov/api/open/v2/HousingAssistanceRenters",
+          params={"$filter": "state eq 'FL' and county eq 'Hillsborough (County)'", "$top": 10000},
+          timeout=60,
+      ).json()["HousingAssistanceRenters"]
+      dds = requests.get(
+          "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries",
+          params={"$filter": "state eq 'FL' and fyDeclared ge 2010", "$top": 10000,
+                  "$select": "disasterNumber,fyDeclared"},
+          timeout=60,
+      ).json()["DisasterDeclarationsSummaries"]
+      year_of = {r["disasterNumber"]: r["fyDeclared"] for r in dds}
+
+      per_year = defaultdict(float)
+      for r in har:
+          yr = year_of.get(r["disasterNumber"])
+          if yr is None: continue
+          per_year[yr] += (r.get("totalApprovedIhpAmount") or 0)
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} renter IA")
+    why_it_matters: >
+      Renter IA captures the displacement half of disaster cost — rental
+      assistance, lodging aid, replacement personal-property grants for
+      tenants who lost housing. Investors with single-family rentals or
+      small multifamily should read this next to owner IA: a disaster year
+      where renter IA spikes tells you the tenant pool in your county
+      absorbed more displacement risk than the owner-occupant pool did.
+      That pressure shows up later as tenant turnover and lease-up delays.
+    tags: [ihp, disaster_assistance, renters, grants, dollars, climate, county, annual]
+    notes: >
+      Same aggregation rule as owner IA. HAR's `totalApprovedIhpAmount`
+      captures rental + other-needs amounts combined.
+
+  - key: fema_disaster_registrations_county
+    label: FEMA Disaster Registrations
+    full_title: FEMA Disaster Registrations — Hillsborough County, Florida (annual count of household IHP filings)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/RegistrationIntakeIndividualsHouseholdPrograms?$filter=state eq 'FL' and county eq '{code}'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: count
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "Hillsborough (County)"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Disaster Registrations — Hillsborough County, Florida, annual count of household IHP filings.
+      Counts households that affirmatively registered after a declared disaster — whether assistance was eventually approved or not.
+      """
+      import requests
+      from collections import defaultdict
+
+      ri = requests.get(
+          "https://www.fema.gov/api/open/v2/RegistrationIntakeIndividualsHouseholdPrograms",
+          params={"$filter": "state eq 'FL' and county eq 'Hillsborough (County)'", "$top": 10000},
+          timeout=60,
+      ).json()["RegistrationIntakeIndividualsHouseholdPrograms"]
+      dds = requests.get(
+          "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries",
+          params={"$filter": "state eq 'FL' and fyDeclared ge 2010", "$top": 10000,
+                  "$select": "disasterNumber,fyDeclared"},
+          timeout=60,
+      ).json()["DisasterDeclarationsSummaries"]
+      year_of = {r["disasterNumber"]: r["fyDeclared"] for r in dds}
+
+      per_year = defaultdict(int)
+      for r in ri:
+          yr = year_of.get(r["disasterNumber"])
+          if yr is None: continue
+          per_year[yr] += (r.get("totalValidRegistrations") or 0)
+      for year, count in sorted(per_year.items()):
+          print(f"{year}: {count:,} valid registrations")
+    why_it_matters: >
+      Registration count is the "how many households showed up" metric —
+      broader than approved dollars because it includes denied and
+      ineligible filings. Against FL + US, a year where Hillsborough's
+      registration share spikes vs. its population share tells you the
+      disaster footprint hit this county harder than average regardless of
+      how much federal money ended up flowing.
+    tags: [ihp, disaster_assistance, registrations, count, climate, county, annual]
+    notes: >
+      Indexed-mode chart: US registrations in a major disaster year can hit
+      ~1M+, vs Hillsborough's ~20k peak — raw scales flatten the county.
+      `totalValidRegistrations` counts registrations that passed FEMA's
+      initial-filter step (not all became grants).
+
+  # ---------------------------------------------------------------------------
+  # Public Assistance (2 metrics) — federal rebuild $ to county government.
+  # ---------------------------------------------------------------------------
+
+  - key: fema_pa_federal_obligation_county
+    label: FEMA Public Assistance — Federal Obligation
+    full_title: FEMA Public Assistance Obligation — Hillsborough County, Florida (annual federal $)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/PublicAssistanceFundedProjectsDetails?$filter=stateAbbreviation eq 'FL' and countyCode eq '{code}' and declarationDate ge '2010-01-01T00:00:00.000Z'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: dollars
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "57"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA Public Assistance — Federal Obligation to Hillsborough County, Florida (annual sum).
+      NOTE: PA countyCode is unpadded ('57', not '057' — decision #110) and state field is `stateAbbreviation`.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/PublicAssistanceFundedProjectsDetails"
+      base = {
+          "$filter": "stateAbbreviation eq 'FL' and countyCode eq '57' and declarationDate ge '2010-01-01T00:00:00.000Z'",
+          "$top": 10000,
+      }
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["PublicAssistanceFundedProjectsDetails"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      per_year = defaultdict(float)
+      for r in rows:
+          yr = int(r["declarationDate"][:4])
+          per_year[yr] += (r.get("federalShareObligated") or 0)
+      for year, amount in sorted(per_year.items()):
+          print(f"{year}: ${amount:,.0f} PA federal obligated")
+    why_it_matters: >
+      Public Assistance is the federal money that rebuilds county
+      infrastructure after a declared disaster — roads, water systems,
+      parks, schools, public buildings. When Hillsborough's PA obligation
+      spikes in a disaster year, that's infrastructure spend that raises
+      the floor under long-term property values and says something
+      quantitative about how bad the damage actually was. Watch the shape
+      against FL + US: Florida's PA cycle dominates US totals in hurricane
+      years.
+    tags: [pa, public_assistance, federal, infrastructure, dollars, climate, county, annual]
+    notes: >
+      featured_geo_code is unpadded ('57', not '057') per decision #110 —
+      live testing confirmed '057' returns 0 rows. Year resolves via the
+      row's `declarationDate` (not `firstObligationDate`) — obligations
+      can stretch years past the declaration, but attributing to
+      declaration year keeps the narrative aligned with the hurricane that
+      caused the work.
+
+  - key: fema_pa_permanent_work_share_county
+    label: FEMA PA Permanent Work Share
+    full_title: FEMA PA Permanent Work Share — Hillsborough County, Florida (annual % of PA obligation in damage categories C–G)
+    source_key: fema
+    access: api
+    api_endpoint: "https://www.fema.gov/api/open/v2/PublicAssistanceFundedProjectsDetails?$filter=stateAbbreviation eq 'FL' and countyCode eq '{code}' and declarationDate ge '2010-01-01T00:00:00.000Z'&$top=10000&$inlinecount=allpages"
+    frequency: annual
+    units: percent
+    geo_levels: [national, state, county]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, Florida
+    featured_geo_code: "57"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "1"
+    python_snippet: |
+      """
+      FEMA PA Permanent Work Share — Hillsborough County, Florida (annual %).
+      Share of PA federal obligation in damage categories C–G (permanent work) vs A–G total.
+      Categories: A=Debris, B=Emergency Protective Measures, C=Roads/Bridges, D=Water Control,
+      E=Buildings, F=Utilities, G=Parks/Recreation.
+      """
+      import requests
+      from collections import defaultdict
+
+      url = "https://www.fema.gov/api/open/v2/PublicAssistanceFundedProjectsDetails"
+      base = {
+          "$filter": "stateAbbreviation eq 'FL' and countyCode eq '57' and declarationDate ge '2010-01-01T00:00:00.000Z'",
+          "$top": 10000,
+      }
+      rows, skip = [], 0
+      while True:
+          batch = requests.get(url, params={**base, "$skip": skip}, timeout=60).json()["PublicAssistanceFundedProjectsDetails"]
+          rows += batch
+          if len(batch) < 10000: break
+          skip += 10000
+      totals = defaultdict(lambda: {"perm": 0.0, "all": 0.0})
+      for r in rows:
+          yr = int(r["declarationDate"][:4])
+          amt = r.get("federalShareObligated") or 0
+          totals[yr]["all"] += amt
+          if r.get("damageCategoryCode") in {"C", "D", "E", "F", "G"}:
+              totals[yr]["perm"] += amt
+      for year, t in sorted(totals.items()):
+          pct = (t["perm"] / t["all"] * 100) if t["all"] else 0
+          print(f"{year}: {pct:.1f}% permanent work")
+    why_it_matters: >
+      Permanent-work share tells you whether the county is rebuilding or
+      just cleaning up. Emergency work (debris + protective measures) is
+      the short-horizon cost; permanent work (roads, utilities, buildings,
+      parks) is the long-horizon reinvestment that recovers property
+      values. A year with high PA dollars but low permanent share is
+      immediate-response-heavy; a year where permanent share runs hot is
+      when the federal money is actually rebuilding the county. At county
+      grain the share is lumpy year-over-year; compare against FL + US
+      trend lines rather than reading any single year.
+    tags: [pa, public_assistance, permanent_work, infrastructure, percent, climate, county, annual]
+    notes: >
+      Damage category codes per FEMA PA schema: A (debris), B (emergency
+      protective measures) = emergency work; C–G = permanent work. Rows
+      with null `damageCategoryCode` are excluded from both numerator and
+      denominator. In quiet county years (few PA projects), share can
+      swing 0–100% — accept the volatility, the benchmark lines carry the
+      structural signal.
