@@ -1,0 +1,695 @@
+# Realtor.com Research dataset catalog for TiRE
+# =============================================================================
+# Per-metric catalog for the Realtor source entry in agents/data/sources.yaml.
+# One entry per column in Realtor's Monthly Housing Inventory CSV feed — the
+# only Realtor research dataset TiRE features as first-class content. Each
+# entry renders a dedicated /metric/realtor/{key} page with a 3-line YoY
+# benchmark chart (Hillsborough County vs Florida vs United States).
+#
+# Browse source: https://www.realtor.com/research/data
+#
+# -----------------------------------------------------------------------------
+# Sprint 9 reshape (2026-04-19). Replaces the Sprint 4 three-dataset shape:
+#
+#   * Dropped: realtor_hotness_monthly_county (overlaps inventory + DOM;
+#     Sprint 9 decision #73). realtor_weekly_national (national-only,
+#     YoY-only, no historical levels; same decision). Old URLs intentionally
+#     404.
+#
+#   * Added: 14 per-metric entries under the Monthly Housing Inventory
+#     dataset, each prefixed `realtor_` to avoid colliding with FRED's
+#     native housing-series keys (active_listings, median_listing_price,
+#     median_days_on_market — Sprint 9 decision #74).
+#
+# Schema extensions vs Sprint 4 appendix A:
+#
+#   * `dataset:` — label carrying the parent Realtor dataset name
+#     ("Monthly Housing Inventory"). Renders as a pill on the metric detail
+#     page. Sprint 9 decision #71 / D1.
+#   * `csv_column:` — the raw CSV column name carrying the absolute value.
+#   * `csv_yoy_column:` — the `_yy` column carrying the native pre-computed
+#     YoY percent change (decimal float in the CSV; multiplied by 100 at
+#     render time). All 14 Realtor metrics render in yoy_native chart mode
+#     per decision #72.
+#   * `benchmark_geos[]` — adopted verbatim from Sprint 8 decision #67.
+#     Shape: geo_key / geo_label / level / code. The fetcher
+#     agents/sources/realtor.py maps `level` to the CSV filter column:
+#       county   -> filter column `county_fips`, value = int
+#       state    -> filter column `state_id`,   value = string (e.g. "FL")
+#       national -> the country CSV is one-row-per-month; no filter
+#
+# Catalog vs fetcher split (Sprint 9 decision D5):
+#   `csv_url` points at the county (primary) CSV. State and country URLs are
+#   derived by the fetcher via `_County_` -> `_State_`/`_Country_` file-stem
+#   substitution. Keeping them derived (not three separate fields on every
+#   entry) matches the Sprint 4 schema contract and cuts ~28 lines of YAML
+#   noise across 14 entries.
+#
+# Featured / benchmark geographies:
+#   primary   = Hillsborough County, FL (FIPS 12057, Census GEOID `12057`,
+#               featured_geo slug `tampa_county` per decision #49 cascade).
+#   benchmark = Florida (state_id "FL") + United States (country "USA").
+#
+# Why Hillsborough, not MSA: Realtor's CSV feed offers county / metro / state
+# / national grains; the Tampa-St. Pete-Clearwater MSA spans 4 counties
+# (Tampa proper sits inside Hillsborough). Single-county primary matches the
+# investor persona and is the finest grain that fills reliably across all 14
+# columns. Decision #48.
+#
+# Historical depth: all 3 CSVs ship 2016-07 onward — 117 months as of 2026-04.
+# Sprint 4's "last 12 for monthly" window applies to source samples
+# (site/data/source-samples/realtor/*.json); history JSON holds the full
+# series for the /metric page chart.
+#
+# -----------------------------------------------------------------------------
+# To add a Realtor metric (if Realtor adds a column to the Monthly feed):
+#   1. Confirm the new column exists in all three CSVs (county/state/country)
+#      and has a {col}_yy variant.
+#   2. Pick a unit (dollars/count/percent/days/ratio) and write a
+#      why_it_matters in TiRE voice.
+#   3. Add entry here with the `realtor_` key prefix.
+#   4. Snapshot pipeline picks it up on next run via dataset-entry iteration.
+# =============================================================================
+
+datasets:
+
+  - key: realtor_median_listing_price
+    label: Median Listing Price
+    full_title: Median Listing Price — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: median_listing_price
+    csv_yoy_column: median_listing_price_yy
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Listing Price — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      State + national benchmarks: swap the CSV URL for the _State_ or _Country_ file.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "median_listing_price", "median_listing_price_yy"]].tail(12))
+    why_it_matters: >
+      The headline number every Hillsborough offer negotiates against. Compare
+      Tampa's trajectory against Florida and the U.S. to see whether you're
+      paying a premium to the state or buying at a discount to the national
+      mean.
+    tags: [prices, listings, headline, county]
+
+  - key: realtor_active_listing_count
+    label: Active Listings
+    full_title: Active Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: active_listing_count
+    csv_yoy_column: active_listing_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Active Listings — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "active_listing_count", "active_listing_count_yy"]].tail(12))
+    why_it_matters: >
+      Live for-sale inventory in Hillsborough. Climbing faster than Florida
+      or the U.S. means local supply is loosening ahead of the cycle — bid
+      with more room; lagging the benchmarks means tight market, offer
+      accordingly.
+    tags: [inventory, supply, listings, county]
+
+  - key: realtor_median_days_on_market
+    label: Median Days on Market
+    full_title: Median Days on Market — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: median_days_on_market
+    csv_yoy_column: median_days_on_market_yy
+    frequency: monthly
+    units: days
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Days on Market — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "median_days_on_market", "median_days_on_market_yy"]].tail(12))
+    why_it_matters: >
+      How long the median Hillsborough listing sits before going under
+      contract. Stretching faster than Florida or the U.S. means demand is
+      cooling locally ahead of the benchmark — shorter means you're bidding
+      into a tighter competitive market than average.
+    tags: [demand, velocity, dom, county]
+
+  - key: realtor_new_listing_count
+    label: New Listings
+    full_title: New Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: new_listing_count
+    csv_yoy_column: new_listing_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      New Listings — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "new_listing_count", "new_listing_count_yy"]].tail(12))
+    why_it_matters: >
+      Fresh supply hitting the Tampa market each month. Accelerating above
+      Florida or the U.S. means sellers are testing the market faster here —
+      watch it with active_listing_count to separate "supply is growing"
+      from "listings are churning without selling."
+    tags: [supply, new_supply, listings, leading, county]
+
+  - key: realtor_price_increased_count
+    label: Price-Increase Count
+    full_title: Price-Increased Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: price_increased_count
+    csv_yoy_column: price_increased_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Price-Increase Count — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "price_increased_count", "price_increased_count_yy"]].tail(12))
+    why_it_matters: >
+      Count of Hillsborough listings where a seller raised their asking price
+      in the month. A rising line vs. Florida or the U.S. is the early read
+      on seller confidence pushing back against cooling demand — read paired
+      with price-reduced counts for the full tone.
+    tags: [pricing, seller_confidence, county]
+
+  - key: realtor_price_increased_share
+    label: Price-Increase Share
+    full_title: Share of Listings with a Price Increase — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: price_increased_share
+    csv_yoy_column: price_increased_share_yy
+    frequency: monthly
+    units: percent
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Price-Increase Share — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "price_increased_share", "price_increased_share_yy"]].tail(12))
+    why_it_matters: >
+      Normalized version of the raw count — what fraction of active
+      Hillsborough listings raised their price this month. Less noisy than
+      the count when inventory swings; the benchmark lines tell you whether
+      seller confidence is local or sector-wide.
+    tags: [pricing, seller_confidence, share, county]
+
+  - key: realtor_price_reduced_count
+    label: Price-Cut Count
+    full_title: Price-Reduced Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: price_reduced_count
+    csv_yoy_column: price_reduced_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Price-Cut Count — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "price_reduced_count", "price_reduced_count_yy"]].tail(12))
+    why_it_matters: >
+      Count of Hillsborough listings where the seller cut their asking price
+      in the month. The cleanest read on where negotiating leverage is
+      shifting — above the FL or U.S. trendline means Tampa sellers are
+      blinking first.
+    tags: [pricing, buyer_leverage, county]
+
+  - key: realtor_price_reduced_share
+    label: Price-Cut Share
+    full_title: Share of Listings with a Price Reduction — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: price_reduced_share
+    csv_yoy_column: price_reduced_share_yy
+    frequency: monthly
+    units: percent
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Price-Cut Share — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "price_reduced_share", "price_reduced_share_yy"]].tail(12))
+    why_it_matters: >
+      Fraction of active Hillsborough listings that saw a price cut this
+      month. The share-form is the one to watch for cycle turns — when
+      Tampa's line runs above Florida's and the U.S., buyers have
+      disproportionate leverage here.
+    tags: [pricing, buyer_leverage, share, county]
+
+  - key: realtor_pending_listing_count
+    label: Pending Listings
+    full_title: Pending Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: pending_listing_count
+    csv_yoy_column: pending_listing_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Pending Listings — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "pending_listing_count", "pending_listing_count_yy"]].tail(12))
+    why_it_matters: >
+      Hillsborough listings under contract but not yet closed — the near-term
+      demand gauge. Stronger growth than Florida or the U.S. signals pending
+      deal volume running hot locally; leading indicator of closed-sale
+      momentum 30-60 days out.
+    tags: [demand, pipeline, leading, county]
+
+  - key: realtor_median_listing_price_per_square_foot
+    label: Median $/Sqft
+    full_title: Median Listing Price per Square Foot — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: median_listing_price_per_square_foot
+    csv_yoy_column: median_listing_price_per_square_foot_yy
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median $/Sqft — Hillsborough County, FL.
+      Source: Realtor.com Research — Monthly Housing Inventory.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "median_listing_price_per_square_foot", "median_listing_price_per_square_foot_yy"]].tail(12))
+    why_it_matters: >
+      Price normalized by size — the one Tampa-vs-elsewhere comparison that
+      controls for house-size differences. When the Hillsborough line diverges
+      from the FL or U.S. benchmark, you're seeing a real valuation gap, not
+      just a size mix shift.
+    tags: [prices, per_sqft, normalized, county]
+
+  - key: realtor_median_square_feet
+    label: Median Sqft
+    full_title: Median Listing Square Footage — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: median_square_feet
+    csv_yoy_column: median_square_feet_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Sqft — Hillsborough County, FL. Source: Realtor.com Research.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "median_square_feet", "median_square_feet_yy"]].tail(12))
+    why_it_matters: >
+      The typical Hillsborough listing's size. Shifting faster than the
+      Florida or U.S. median tells you the inventory mix is changing —
+      smaller homes going on the market (entry-level supply loosening) or
+      larger ones (move-up inventory expanding).
+    tags: [mix, size, listings, county]
+    notes: >
+      Unit is `count` for schema purposes even though the value is square
+      feet; integer formatting on the hero. Chart mode is yoy_native per
+      decision #72 regardless of unit.
+
+  - key: realtor_average_listing_price
+    label: Average Listing Price
+    full_title: Average Listing Price — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: average_listing_price
+    csv_yoy_column: average_listing_price_yy
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Average Listing Price — Hillsborough County, FL. Source: Realtor.com Research.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "average_listing_price", "average_listing_price_yy"]].tail(12))
+    why_it_matters: >
+      The arithmetic mean listing price — sensitive to high-end outliers in
+      a way the median isn't. Paired with the median, a widening gap
+      (average running well above median) means the luxury tail is pulling
+      the market up; compression means the mid-market is carrying the action.
+    tags: [prices, mix, distribution, county]
+
+  - key: realtor_total_listing_count
+    label: Total Listings
+    full_title: Total Listing Count — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: total_listing_count
+    csv_yoy_column: total_listing_count_yy
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Total Listings — Hillsborough County, FL. Source: Realtor.com Research.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "total_listing_count", "total_listing_count_yy"]].tail(12))
+    why_it_matters: >
+      Everything the MLS sees in Hillsborough — active plus pending. The
+      wider supply gauge compared to active_listing_count; use the two
+      together to separate "supply is real" (both up) from "supply is just
+      churn" (total flat, active up).
+    tags: [inventory, supply, total, county]
+    notes: >
+      Total = active + pending. Compare against active_listing_count for the
+      "churn vs real supply" read.
+
+  - key: realtor_pending_ratio
+    label: Pending Ratio
+    full_title: Pending-to-Active Ratio — Hillsborough County, FL
+    dataset: Monthly Housing Inventory
+    source_key: realtor
+    access: csv-download
+    csv_url: https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv
+    csv_column: pending_ratio
+    csv_yoy_column: pending_ratio_yy
+    frequency: monthly
+    units: ratio
+    geo_levels: [national, state, metro, county, zip]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Pending Ratio — Hillsborough County, FL. Source: Realtor.com Research.
+      """
+      import pandas as pd
+
+      url = "https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_County_History.csv"
+      df = pd.read_csv(url)
+      df = df[df["county_fips"] == 12057]
+      df["date"] = pd.to_datetime(df["month_date_yyyymm"], format="%Y%m") + pd.offsets.MonthEnd(0)
+      df = df.sort_values("date")
+      print(df[["date", "pending_ratio", "pending_ratio_yy"]].tail(12))
+    why_it_matters: >
+      Pending listings divided by active — a direct demand-vs-supply
+      tightness gauge. Above 1.0 means deals in motion outnumber homes still
+      for sale (hot); below means a supply overhang. Comparing Hillsborough's
+      ratio to Florida and the U.S. tells you whether Tampa is running hotter
+      or cooler than the surrounding baseline.
+    tags: [demand, supply, tightness, county]
