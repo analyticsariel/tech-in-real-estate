@@ -1,0 +1,716 @@
+# Redfin Data Center dataset catalog for TiRE
+# =============================================================================
+# Per-metric catalog for the Redfin source entry in agents/data/sources.yaml.
+# One entry per investor-relevant column in Redfin's Monthly Market Tracker
+# TSV feed — the only Redfin research dataset TiRE features as first-class
+# content. Each entry renders a dedicated /metric/redfin/{key} page with a
+# 3-line YoY benchmark chart (Hillsborough County vs Florida vs United States).
+#
+# Browse source: https://www.redfin.com/news/data-center/
+#
+# -----------------------------------------------------------------------------
+# Sprint 12 reshape (2026-04-19). Replaces the Sprint 4 two-dataset shape:
+#
+#   * Dropped: redfin_weekly_metro_sales (4-week rolling metro feed overlaps
+#     the Monthly tracker on a short lag; Sprint 12 decision #80).
+#     redfin_monthly_city_sales (city grain; Sprint 12 re-anchors to county
+#     to match Census + Realtor). Old URLs intentionally 404.
+#
+#   * Added: 14 per-metric entries under the Monthly Market Tracker dataset,
+#     each prefixed `redfin_` to keep the history-dir namespace clean
+#     (mirrors Sprint 9 Realtor decision #74).
+#
+# Schema extensions vs Sprint 4 appendix A (all shipped by Sprint 8 + 9):
+#
+#   * `dataset:` — label carrying the parent Redfin dataset name
+#     ("Monthly Market Tracker"). Renders as a pill on the metric detail page.
+#   * `csv_column:` — the raw TSV column name carrying the absolute value.
+#     UPPER-case because Redfin publishes TSVs with UPPER-case headers.
+#   * **No `csv_yoy_column`.** Decision #81: Redfin's `_YOY` columns are
+#     mixed-semantic (8 metrics store ratio, 6 store absolute delta). The
+#     S12.3 fetcher computes yoy_observations uniformly from absolute values
+#     for every metric. Native `{COL}_YOY` is read only as a +/- 0.5pp
+#     sanity-check telemetry signal — derived in the fetcher as
+#     `csv_column + "_YOY"`, not carried in the catalog.
+#   * `benchmark_geos[]` — Sprint 8 decision #67 shape. Fetcher maps:
+#       county   -> filter `TABLE_ID = 464 + PROPERTY_TYPE_ID = -1 + IS_SA = False`
+#       state    -> filter `STATE_CODE = "FL" + PROPERTY_TYPE_ID = -1 + IS_SA = False`
+#       national -> filter `PROPERTY_TYPE_ID = -1 + IS_SA = False` only
+#
+# Catalog vs fetcher split (mirrors Sprint 9 decision D5):
+#   `csv_url` points at the county (primary) TSV. State and national URLs are
+#   derived by the fetcher via stem substitution
+#     county_market_tracker    -> state_market_tracker
+#                              -> us_national_market_tracker
+#   Keeping them derived matches the Sprint 4 schema contract.
+#
+# Featured / benchmark geographies:
+#   primary   = Hillsborough County, FL (FIPS 12057, Redfin TABLE_ID 464,
+#               featured_geo slug `tampa_county` per decision #49 cascade).
+#   benchmark = Florida (STATE_CODE "FL") + United States ("USA").
+#
+# Redfin quirks codified in the S12.3 fetcher, not the catalog:
+#   - TSVs use UPPER-case column names (MEDIAN_SALE_PRICE, not median_sale_price).
+#   - Each row has a property-type cut: PROPERTY_TYPE_ID = -1 = "All Residential"
+#     is the canonical aggregate across SFR (6) + Condo (3) + Multi-family 2-4
+#     (4) + Townhouse (13). Also published: -2 = "Single Units Only" (national
+#     only; not used). Per-property splits deferred.
+#   - National TSV publishes both seasonally adjusted (IS_SEASONALLY_ADJUSTED
+#     = True) and non-SA rows. County + state only publish non-SA. Filter
+#     IS_SEASONALLY_ADJUSTED = False on all three so the benchmark math stays
+#     apples-to-apples.
+#   - TABLE_ID 464 = Hillsborough County, FL. A second Hillsborough exists in
+#     NH at 1886; the filter explicitly targets 464.
+#
+# Historical depth: all three TSVs ship 2012-01 onward — 171 monthly
+# observations as of 2026-04, aligned across all three geos. Exception:
+# PRICE_DROPS at Hillsborough starts 2014-02 (145 months retained; FL + USA
+# start 2012-10 and 2012-01 respectively). Sprint 4's "last 12 for monthly"
+# window applies to source samples (site/data/source-samples/redfin/*.json);
+# history JSON holds the full series for the /metric page chart.
+#
+# -----------------------------------------------------------------------------
+# To add a Redfin metric (if Redfin publishes a new column on Monthly Tracker):
+#   1. Confirm the new column exists in all three TSVs (county / state /
+#      national) with matching UPPER-case header and a `{COL}_YOY` variant.
+#   2. Run the decode probe: compare `_YOY[t]` against `(val[t]-val[t-12])`
+#      and the ratio form to decide whether it's a ratio or abs-delta column.
+#      Either way, S12.3 computes uniformly; record the decode finding in
+#      docs/plans/12-prd.md appendix A.
+#   3. Pick a unit (dollars/count/percent/days/ratio) and write a
+#      why_it_matters in TiRE voice (brand-and-voice.md).
+#   4. Add entry here with the `redfin_` key prefix + unchanged schema.
+#   5. Snapshot pipeline picks it up on next run via dataset-entry iteration.
+# =============================================================================
+
+datasets:
+
+  - key: redfin_median_sale_price
+    label: Median Sale Price
+    full_title: Median Sale Price — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MEDIAN_SALE_PRICE
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Sale Price — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+
+      Benchmark TSVs (same column, same filter pattern):
+        state:    state_market_tracker.tsv000.gz         — filter STATE_CODE == "FL"
+        national: us_national_market_tracker.tsv000.gz   — single row per month
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)                     # Hillsborough County, FL
+          & (df["PROPERTY_TYPE_ID"] == -1)            # All Residential
+          & (~df["IS_SEASONALLY_ADJUSTED"])           # non-SA only
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MEDIAN_SALE_PRICE", "MEDIAN_SALE_PRICE_YOY"]].tail(12))
+    why_it_matters: >
+      What houses actually trade for in Hillsborough — not list, not estimate.
+      Track it against Florida and the U.S. to see whether Tampa is running
+      hot, cooling off, or riding the national tide.
+    tags: [prices, sales, headline, county]
+
+  - key: redfin_median_list_price
+    label: Median List Price
+    full_title: Median List Price — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MEDIAN_LIST_PRICE
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median List Price — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MEDIAN_LIST_PRICE", "MEDIAN_LIST_PRICE_YOY"]].tail(12))
+    why_it_matters: >
+      Where Hillsborough sellers start the conversation. Pair it with median
+      sale price and the list-vs-sale gap tells you how much room there is
+      in the negotiation — a widening gap against Florida or the U.S. means
+      sellers are leaning optimistic relative to the benchmark.
+    tags: [prices, listings, asks, county]
+
+  - key: redfin_median_ppsf
+    label: Median Price per Sqft (Sale)
+    full_title: Median Sale Price per Square Foot — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MEDIAN_PPSF
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Sale Price per Square Foot — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MEDIAN_PPSF", "MEDIAN_PPSF_YOY"]].tail(12))
+    why_it_matters: >
+      Price per square foot strips the size mix out of the median. Rising
+      Hillsborough PPSF while Florida stays flat means buyers are paying up
+      for Tampa density, not just bigger houses — different signal, different
+      reaction.
+    tags: [prices, sales, ppsf, county]
+
+  - key: redfin_median_list_ppsf
+    label: Median List Price per Sqft
+    full_title: Median List Price per Square Foot — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MEDIAN_LIST_PPSF
+    frequency: monthly
+    units: dollars
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median List Price per Square Foot — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MEDIAN_LIST_PPSF", "MEDIAN_LIST_PPSF_YOY"]].tail(12))
+    why_it_matters: >
+      What Hillsborough sellers ask per square foot, normalized for size.
+      When list PPSF pulls ahead of sale PPSF locally and the gap widens
+      versus Florida or the U.S., expect more price reductions in the next
+      60 days.
+    tags: [prices, listings, ppsf, county]
+
+  - key: redfin_homes_sold
+    label: Homes Sold
+    full_title: Homes Sold — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: HOMES_SOLD
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Homes Sold — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "HOMES_SOLD", "HOMES_SOLD_YOY"]].tail(12))
+    why_it_matters: >
+      Closed deals per month in Hillsborough. When Tampa volume falls faster
+      than Florida or the U.S., local demand is cracking before the macro
+      cycle catches up — that's the window where buyers get leverage.
+    tags: [sales, volume, closings, county]
+
+  - key: redfin_pending_sales
+    label: Pending Sales
+    full_title: Pending Sales — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: PENDING_SALES
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Pending Sales — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "PENDING_SALES", "PENDING_SALES_YOY"]].tail(12))
+    why_it_matters: >
+      Deals under contract but not yet closed. Pending is the forward-looking
+      read on Hillsborough — when Tampa pendings slow versus Florida or the
+      U.S., next month's sale count follows.
+    tags: [sales, pipeline, pending, county]
+
+  - key: redfin_new_listings
+    label: New Listings
+    full_title: New Listings — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: NEW_LISTINGS
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      New Listings — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "NEW_LISTINGS", "NEW_LISTINGS_YOY"]].tail(12))
+    why_it_matters: >
+      Fresh inventory hitting Hillsborough each month. Surging local new
+      listings relative to Florida or the U.S. means Tampa sellers are
+      getting antsy — more negotiating room for buyers, compressed margins
+      for flippers.
+    tags: [inventory, supply, inflow, county]
+
+  - key: redfin_inventory
+    label: Inventory
+    full_title: Active Inventory — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: INVENTORY
+    frequency: monthly
+    units: count
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Active Inventory — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "INVENTORY", "INVENTORY_YOY"]].tail(12))
+    why_it_matters: >
+      What's sitting on the Hillsborough market right now. Rising faster than
+      state or national inventory means Tampa supply is uncorking ahead of
+      the cycle; falling faster means the squeeze is still on and sellers
+      keep the leverage.
+    tags: [inventory, supply, active, county]
+
+  - key: redfin_months_of_supply
+    label: Months of Supply
+    full_title: Months of Supply — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MONTHS_OF_SUPPLY
+    frequency: monthly
+    units: ratio
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Months of Supply — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MONTHS_OF_SUPPLY", "MONTHS_OF_SUPPLY_YOY"]].tail(12))
+    why_it_matters: >
+      How many months to clear Hillsborough inventory at current pace. Under
+      four is a seller's market; over six is a buyer's market. Compared
+      against Florida and the U.S., it tells you whether Tampa's tilt is
+      local or part of a broader shift.
+    tags: [supply, demand, balance, county]
+
+  - key: redfin_median_dom
+    label: Median Days on Market
+    full_title: Median Days on Market — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: MEDIAN_DOM
+    frequency: monthly
+    units: days
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Median Days on Market — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "MEDIAN_DOM", "MEDIAN_DOM_YOY"]].tail(12))
+    why_it_matters: >
+      How long the median Hillsborough listing takes to go pending. When
+      Tampa DOM climbs while Florida and the U.S. stay flat, local demand is
+      thinning first — bidders, not sellers, should notice.
+    tags: [velocity, dom, days, county]
+
+  - key: redfin_avg_sale_to_list
+    label: Avg Sale-to-List Ratio
+    full_title: Average Sale-to-List Ratio — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: AVG_SALE_TO_LIST
+    frequency: monthly
+    units: ratio
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Average Sale-to-List Ratio — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "AVG_SALE_TO_LIST", "AVG_SALE_TO_LIST_YOY"]].tail(12))
+    why_it_matters: >
+      Closed price divided by last list price. Above 1.00 means Hillsborough
+      sellers get over ask on average; below 0.97 means real negotiating
+      room. Comparing to Florida and the U.S. shows where Tampa sits on the
+      bargaining spectrum.
+    tags: [sales, negotiation, ratio, county]
+
+  - key: redfin_sold_above_list
+    label: Sold Above List Share
+    full_title: Share Sold Above List — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: SOLD_ABOVE_LIST
+    frequency: monthly
+    units: percent
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Share Sold Above List — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "SOLD_ABOVE_LIST", "SOLD_ABOVE_LIST_YOY"]].tail(12))
+    why_it_matters: >
+      Share of Hillsborough closings that finished above asking. When the
+      share runs 10-plus points hotter than Florida or the U.S., you're in a
+      local bidding war — price in a cushion or walk away earlier.
+    tags: [sales, bidding, negotiation, county]
+
+  - key: redfin_price_drops
+    label: Price Drops Share
+    full_title: Share of Listings with Price Drops — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: PRICE_DROPS
+    frequency: monthly
+    units: percent
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Share of Listings with Price Drops — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      Note: Hillsborough series starts 2014-02; FL + US start earlier.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "PRICE_DROPS", "PRICE_DROPS_YOY"]].tail(12))
+    why_it_matters: >
+      Share of active Hillsborough listings that took a price cut in the
+      last week. Higher than Florida or the U.S. means sellers are
+      capitulating faster — buyers can slow-play offers and wait for the
+      cut instead of bidding up.
+    tags: [listings, seller, reductions, county]
+
+  - key: redfin_off_market_in_two_weeks
+    label: Off Market in Two Weeks
+    full_title: Share Off Market in Two Weeks — Hillsborough County, FL
+    dataset: Monthly Market Tracker
+    source_key: redfin
+    access: csv-download
+    csv_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz
+    csv_column: OFF_MARKET_IN_TWO_WEEKS
+    frequency: monthly
+    units: percent
+    geo_levels: [national, state, metro, county, city, zip, neighborhood]
+    featured_geo: tampa_county
+    featured_geo_label: Hillsborough County, FL
+    featured_geo_code: "12057"
+    benchmark_geos:
+      - geo_key: state_12
+        geo_label: Florida
+        level: state
+        code: "FL"
+      - geo_key: us_1
+        geo_label: United States
+        level: national
+        code: "USA"
+    python_snippet: |
+      """
+      Share Off Market in Two Weeks — Hillsborough County, FL.
+      Source: Redfin Data Center — Monthly Market Tracker.
+      """
+      import pandas as pd
+
+      URL = "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/county_market_tracker.tsv000.gz"
+      df = pd.read_csv(URL, sep="\t", compression="gzip", low_memory=False)
+      df = df[
+          (df["TABLE_ID"] == 464)
+          & (df["PROPERTY_TYPE_ID"] == -1)
+          & (~df["IS_SEASONALLY_ADJUSTED"])
+      ].sort_values("PERIOD_END")
+      print(df[["PERIOD_END", "OFF_MARKET_IN_TWO_WEEKS", "OFF_MARKET_IN_TWO_WEEKS_YOY"]].tail(12))
+    why_it_matters: >
+      Share of Hillsborough listings that went pending within 14 days. When
+      the local share beats the state and national benchmarks, the A-tier
+      listings are clearing fast — expect bidding pressure on the best stock
+      even in a cooling broader market.
+    tags: [listings, velocity, demand, county]
