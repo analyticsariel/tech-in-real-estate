@@ -1,0 +1,29 @@
+# SAM settings per stage. CI passes --config-env dev|prod (.github/workflows/tire-agent-deploy.yml).
+# The bucket and repo come from bootstrap.yaml. Stack parameters (origins, caps, alarm email) are set in the workflow.
+version = 0.1
+
+[dev.global.parameters]
+stack_name = "tire-agent-dev"
+region = "us-east-1"
+
+[dev.deploy.parameters]
+s3_bucket = "tire-agent-artifacts-<YOUR_AWS_ACCOUNT_ID>"
+s3_prefix = "dev"
+image_repositories = ["AskFunction=<YOUR_AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/tire-agent"]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+tags = "project=tire-agent stage=dev"
+
+[prod.global.parameters]
+stack_name = "tire-agent-prod"
+region = "us-east-1"
+
+[prod.deploy.parameters]
+s3_bucket = "tire-agent-artifacts-<YOUR_AWS_ACCOUNT_ID>"
+s3_prefix = "prod"
+image_repositories = ["AskFunction=<YOUR_AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/tire-agent"]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+tags = "project=tire-agent stage=prod"

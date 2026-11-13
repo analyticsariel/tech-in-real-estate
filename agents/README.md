@@ -20,7 +20,9 @@ TiRE agents are Python 3.11+, Anthropic SDK direct (not OpenRouter), LangChain /
 
 ## What's here
 
-Nothing yet — TiRE's own research / readings / publish pipelines are the first candidates to land here as public reference implementations. [The site's `/agents` hub](https://techinrealestate.com/agents) will list them as they ship.
+- [`tire-agent/`](tire-agent/): the grounded Q&A agent behind [techinrealestate.com/ask](https://techinrealestate.com/ask). Deep Agents and Claude on Bedrock. Every number is checked against the data, and every answer links to its source. Includes the Lambda deploy and the eval gate.
+
+[The site's `/agents` hub](https://techinrealestate.com/agents) lists every agent, shipped and planned.
 
 ## Contributing
 

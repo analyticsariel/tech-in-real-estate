@@ -1,0 +1,6 @@
+# Dev-only tooling for tire-agent (tests, notebook review). Not shipped in the Lambda image.
+-r requirements.txt
+pytest==9.0.3
+jupyterlab==4.6.5
+ipykernel
+nbformat
