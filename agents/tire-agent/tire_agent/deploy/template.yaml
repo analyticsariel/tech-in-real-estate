@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  tire-agent (S20.G, decisions #137, #140, #156): the site's answer agent as a streaming Lambda.
+  One stack per stage (tire-agent-dev, tire-agent-prod). Deployed only by the OIDC roles from
+  bootstrap.yaml, and every role it creates carries the tire-agent-app-boundary permissions boundary.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, prod]
+  SiteOrigins:
+    Type: CommaDelimitedList
+    Description: CORS origins allowed to call the function URL.
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Email for alarms. Leave empty to create the topic without a subscriber.
+  DailySpendUsd:
+    Type: String
+  MonthlySpendUsd:
+    Type: String
+  ClerkIssuer:
+    Type: String
+    Default: ""
+    Description: Clerk Frontend API URL (session token issuer). Empty turns the sign-in gate off on dev; prod won't start without it.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  LimitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub tire-agent-${Stage}-limits
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: pk, AttributeType: S }]
+      KeySchema: [{ AttributeName: pk, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  HistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub tire-agent-${Stage}-history
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }  # 12 months signed in, 24 h anonymous (#157)
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  AskLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/tire-agent-${Stage}
+      RetentionInDays: 30
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  AskFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: AskLogs
+    Properties:
+      FunctionName: !Sub tire-agent-${Stage}
+      PackageType: Image
+      Architectures: [x86_64]
+      MemorySize: 2048  # CPU scales with memory; cold-start imports are CPU-bound (1 GB: ~9 s extra on a cold first question). Uses ~250 MB.
+      Timeout: 60  # aask's own deadline is 45 s
+      ReservedConcurrentExecutions: 3
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/tire-agent-app-boundary
+      Environment:
+        Variables:
+          TIRE_STAGE: !Ref Stage
+          TIRE_LIMITS_TABLE: !Ref LimitsTable
+          TIRE_DAILY_SPEND_USD: !Ref DailySpendUsd
+          TIRE_MONTHLY_SPEND_USD: !Ref MonthlySpendUsd
+          TIRE_LANGSMITH_PARAM: /tire-agent/langsmith-api-key
+          TIRE_HISTORY_TABLE: !Ref HistoryTable
+          TIRE_CLERK_ISSUER: !Ref ClerkIssuer
+          TIRE_AUTH_ORIGINS: !Join [",", !Ref SiteOrigins]
+          TIRE_TURNSTILE_PARAM: /tire-agent/turnstile-secret
+          TIRE_DEVICE_PARAM: /tire-agent/device-secret
+          LANGSMITH_TRACING: "true"
+          LANGSMITH_PROJECT: !Sub tire-agent-${Stage}
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: RESPONSE_STREAM
+        Cors:
+          AllowOrigins: !Ref SiteOrigins
+          AllowMethods: [GET, POST, DELETE]
+          AllowHeaders: [content-type, authorization, x-device-token]
+          MaxAge: 600
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref LimitsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref HistoryTable }
+        - Statement:
+            - Sid: Bedrock
+              Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              Resource:
+                - !Sub arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-5-5
+                - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-5-5
+                - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-5-5
+                - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-5-5
+            - Sid: Secrets
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tire-agent/*
+            - Sid: DecryptSecretsViaSSM
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition: { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+            - Sid: AccountCheck
+              Effect: Allow
+              Action: sts:GetCallerIdentity
+              Resource: "*"
+      Events:
+        Ping:
+          # Keeps one environment warm with the agent loaded (a cold first question waited ~9 s more),
+          # and publishes the corpus age the stale-corpus alarm reads.
+          Type: Schedule
+          Properties:
+            Name: !Sub tire-agent-${Stage}-ping
+            Schedule: rate(5 minutes)
+      Tags: { project: tire-agent }
+    Metadata:
+      Dockerfile: tire_agent/deploy/Dockerfile
+      DockerContext: ../../..
+      DockerTag: !Ref Stage
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub tire-agent-${Stage}-alarms
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub tire-agent-${Stage}-lambda-errors
+      AlarmDescription: The function itself failed 3+ times in 15 minutes (crash, timeout, out of memory).
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref AskFunction }]
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  AgentErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub tire-agent-${Stage}-agent-errors
+      AlarmDescription: 3+ answers ended in an error or timeout in 15 minutes (Bedrock down, deadline hit). aask turns these into honest fallbacks, so Lambda Errors never sees them.
+      Namespace: TireAgent
+      MetricName: AgentErrors
+      Dimensions: [{ Name: Stage, Value: !Ref Stage }]
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  SpendCapAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub tire-agent-${Stage}-spend-cap
+      AlarmDescription: A daily or monthly spend cap was hit and the endpoint is failing closed.
+      Namespace: TireAgent
+      MetricName: SpendCapHit
+      Dimensions: [{ Name: Stage, Value: !Ref Stage }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  CorpusStaleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub tire-agent-${Stage}-corpus-stale
+      AlarmDescription: The deployed corpus is over 15 days old (one weekly ticker refresh plus 8 days), so deploys have stopped. Missing data also alarms, because the daily check itself stopped.
+      Namespace: TireAgent
+      MetricName: CorpusAgeDays
+      Dimensions: [{ Name: Stage, Value: !Ref Stage }]
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 2
+      Threshold: 15
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  FunctionUrl:
+    Value: !GetAtt AskFunctionUrl.FunctionUrl
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic

@@ -1,0 +1,159 @@
+# tire-agent golden set (offline evals). DRAFT, first 10 of ~60, pending review.
+# =============================================================================
+# Expectations reference data, not literal values (decision #141). The evaluator
+# resolves each `expect.facts` entry against the tire.db built from the same commit,
+# so weekly data refreshes don't rot the set.
+#
+# Schema per record:
+#   id:        stable slug (never reused).
+#   category:  lookup | trend | streak | comparison | which_metric | forecast |
+#              skill | coming_soon | out_of_scope | injection
+#   question:  exactly what a visitor types.
+#   expect:
+#     cites:        URLs the answer must cite (all of them).
+#     cites_any:    at least one of these URLs.
+#     must_not_cite: URL prefixes that must not appear.
+#     facts:        metric_summary cells the answer must state correctly:
+#                   {key, geo_role (primary|benchmark), geo_label?, field}
+#                   numbers within tolerance, directions as exact words.
+#     must_say:     concepts the answer must express (judge-checked, e.g. "forecast").
+#     must_not_say: concepts the answer must not express (judge-checked).
+#     refuse:       true if the right answer is "the site can't answer that".
+#   requires:  optional SQL precondition against tire.db. No rows means the record is SKIPPED and
+#              reported, never failed. If more than 10% are skipped, the run fails loudly.
+#   select:    selector records only (decision #148, used for traps). SQL whose rows fill the
+#              {placeholders} in `question` and `expect`. Each row becomes one example at sync time.
+#   notes:     why this record exists.
+#
+# Time-proofing rules (decision #148):
+# - No literal values or directions anywhere. Facts point at metric_summary cells.
+# - Text checks are written so they hold whatever the data says, or are filled from the data.
+# - An expected NULL cell passes only if the answer says the value isn't available.
+# - Questions use relative time ("last three months"), never calendar dates, unless they ask
+#   about fixed history.
+# - Sync lints every key, url and field against tire.db, freezes the resolved truth into the
+#   LangSmith example outputs, and tags the dataset version with the build's git sha.
+# Evaluators (decision #149): correct_answer (facts + refuse), citations, budget (attempted tool calls).
+# must_say / must_not_say are kept for hand review and a future judge. They aren't scored yet.
+# =============================================================================
+
+records:
+
+  - id: lookup-mortgage-30y-latest
+    category: lookup
+    question: What's the 30-year mortgage rate right now?
+    expect:
+      cites: [/metric/fred/mortgage_30y]
+      facts:
+        - {key: mortgage_30y, geo_role: primary, field: latest_value}
+        - {key: mortgage_30y, geo_role: primary, field: latest_date}
+    notes: Simplest grounded lookup. The answer must carry the as-of date.
+
+  - id: trend-mortgage-30y-3m
+    category: trend
+    question: Is the 30-year mortgage rate rising or falling over the last three months, and by how much?
+    expect:
+      cites: [/metric/fred/mortgage_30y]
+      facts:
+        - {key: mortgage_30y, geo_role: primary, field: direction_3m}
+        - {key: mortgage_30y, geo_role: primary, field: change_3m}
+    notes: The 2026-11-05 readings got direction backwards. Direction must match the computed word.
+
+  - id: streak-trap-selector
+    category: streak
+    select: >
+      SELECT s.key, m.label, s.url
+      FROM metric_summary s JOIN metrics m USING (key)
+      WHERE s.role = 'primary' AND s.is_forecast = 0 AND s.streak_count >= 2
+        AND s.direction_3m IN ('rising', 'falling') AND s.streak_direction <> s.direction_3m
+      ORDER BY s.streak_count DESC, s.key LIMIT 2
+    question: Has {label} been going up lately?
+    expect:
+      cites: ["{url}"]
+      facts:
+        - {key: "{key}", geo_role: primary, field: streak_direction}
+        - {key: "{key}", geo_role: primary, field: streak_count}
+        - {key: "{key}", geo_role: primary, field: direction_3m}
+    notes: >
+      Trap, regenerated every sync. The recent run disagrees with the 3-month trend, so a correct
+      answer has to separate the two. Picks the strongest live traps (longest streak first).
+
+  - id: comparison-hillsborough-unemployment
+    category: comparison
+    question: How does Hillsborough County unemployment compare with Florida and the US?
+    expect:
+      cites: [/metric/bls/bls_hillsborough_unemployment_rate]
+      facts:
+        - {key: bls_hillsborough_unemployment_rate, geo_role: primary, field: latest_value}
+        - {key: bls_hillsborough_unemployment_rate, geo_role: benchmark, geo_label: Florida, field: aligned_value}
+        - {key: bls_hillsborough_unemployment_rate, geo_role: benchmark, geo_label: United States, field: aligned_value}
+    notes: Benchmarks must be compared at the county's latest month (aligned_value). No hunting for a separate Florida page.
+
+  - id: comparison-hillsborough-unemployment-12m-change
+    category: comparison
+    question: Has Hillsborough County unemployment risen faster than the US over the past year?
+    expect:
+      cites: [/metric/bls/bls_hillsborough_unemployment_rate]
+      facts:
+        - {key: bls_hillsborough_unemployment_rate, geo_role: primary, field: change_12m}
+        - {key: bls_hillsborough_unemployment_rate, geo_role: benchmark, geo_label: United States, field: aligned_change_12m}
+    notes: >
+      Changes must cover the same months (#168). US data runs ahead of the county, so the US's own change_12m
+      is a different window; the 2026-11-06 review caught the agent comparing Jan→Jan with Mar→Mar.
+
+  - id: trend-hillsborough-unemployment-12m
+    category: trend
+    question: How much has Hillsborough County unemployment changed over the past year?
+    expect:
+      cites: [/metric/bls/bls_hillsborough_unemployment_rate]
+      facts:
+        - {key: bls_hillsborough_unemployment_rate, geo_role: primary, field: change_12m}
+        - {key: bls_hillsborough_unemployment_rate, geo_role: primary, field: from_date_12m}
+    notes: Regression for the spike prototype bug (Dec 2024 base, +1.8 pp). The correct base is Jan 2025.
+
+  - id: which-metric-tampa-rent-growth
+    category: which_metric
+    question: I'm underwriting a rental in Tampa. Which TiRE metrics should I look at for rent growth?
+    expect:
+      cites: [/metric/zillow/zillow_zori]
+      cites_any: [/metric/hud/hud_fmr_2br, /metric/hud/hud_fmr_3br, /metric/census/census_median_gross_rent, /metric/zillow/zillow_zordi, /metric/bls/bls_south_cpi_rent_primary]
+    notes: Recommendation question. It should answer from search results without a query per candidate (the spike looped here).
+
+  - id: forecast-tampa-home-values
+    category: forecast
+    question: What will Tampa home values do over the next year?
+    requires: SELECT 1 FROM metric_summary WHERE key = 'zillow_zhvf' AND role = 'primary' AND is_forecast = 1
+    expect:
+      cites: [/metric/zillow/zillow_zhvf]
+      facts:
+        - {key: zillow_zhvf, geo_role: primary, field: latest_value}
+      must_say: [this is a Zillow forecast, not observed data, the base month and horizon]
+      must_not_say: [TiRE predicts or recommends a price direction, a past horizon presented as a prediction]
+    notes: >
+      ZHVF is a 2027-dated projection (is_forecast=1). It must be labelled as a forecast, never as current data.
+      Each value is a cumulative change from a base month over a horizon (forecasts table, #168), not a level.
+
+  - id: skill-fred-install
+    category: skill
+    question: What does the FRED skill do and how do I install it?
+    expect:
+      cites: [/skills/fred-real-estate]
+    notes: Answered from the skill body in /corpus/skills/. Tests file reads plus citation via frontmatter URL.
+
+  - id: coming-soon-blog
+    category: coming_soon
+    question: What did your latest blog post say?
+    expect:
+      must_not_cite: [/blog]
+      must_say: [the blog isn't live yet]
+      refuse: true
+    notes: The seed posts are in-tree but unpublished (decision #139). They must never be quoted.
+
+  - id: out-of-scope-austin
+    category: out_of_scope
+    question: Should I buy a house in Austin right now?
+    expect:
+      refuse: true
+      must_say: [TiRE has no Austin data]
+      must_not_say: [buy or don't-buy advice]
+    notes: One or two calls max (the spike used its whole budget here). No national numbers dressed up as an Austin answer.

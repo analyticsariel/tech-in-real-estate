@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  tire-agent bootstrap (one-time, deployed by a human with deploy/bootstrap.sh).
+  GitHub OIDC provider, least-privilege deploy roles for dev and prod, a permissions
+  boundary for every role the app stacks create, the SAM artifacts bucket, and the image repo.
+  Everything is named tire-agent-* and tagged project=tire-agent (decision #154) so the
+  cleanup of other stacks in this account can't take it by mistake.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: your-org/your-repo
+  BudgetEmail:
+    Type: String
+    Default: ""
+    Description: Email for the $5/month Bedrock budget alert. Leave empty to skip the budget.
+
+Conditions:
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetEmail, ""]]
+
+Resources:
+  GitHubOIDC:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub tire-agent-artifacts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules: [{ Id: expire-old-artifacts, Status: Enabled, ExpirationInDays: 30 }]
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  ImageRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: tire-agent
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"keep the last 20 images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":20},
+          "action":{"type":"expire"}}]}
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  # Ceiling for every role the app stacks create (the Lambda execution role). A deploy role
+  # can only create roles that carry this boundary, so it can't mint itself an admin role.
+  AppBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: tire-agent-app-boundary
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Bedrock
+            Effect: Allow
+            Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+            Resource:
+              - !Sub arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-5-5
+              - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-5-5
+              - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-5-5
+              - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-5-5
+          - Sid: Limits
+            Effect: Allow
+            Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
+            Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/tire-agent-*
+          - Sid: Secrets
+            Effect: Allow
+            Action: [ssm:GetParameter, ssm:GetParameters]
+            Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tire-agent/*
+          - Sid: DecryptSecretsViaSSM
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: "*"
+            Condition: { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+          - Sid: AccountCheck
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: "*"
+          - Sid: LogsAndMetrics
+            Effect: Allow
+            Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, cloudwatch:PutMetricData]
+            Resource: "*"
+
+  DevDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tire-agent-deploy-dev
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument: !Sub
+        - |
+          {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+           "Principal":{"Federated":"${Oidc}"},"Action":"sts:AssumeRoleWithWebIdentity",
+           "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"},
+                        "StringLike":{"token.actions.githubusercontent.com:sub":"repo:${GitHubRepo}:ref:refs/heads/sprint-*"}}}]}
+        - { Oidc: !Ref GitHubOIDC }
+      ManagedPolicyArns: [!Ref DevDeployPolicy]
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  ProdDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tire-agent-deploy-prod
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument: !Sub
+        - |
+          {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+           "Principal":{"Federated":"${Oidc}"},"Action":"sts:AssumeRoleWithWebIdentity",
+           "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com",
+                                        "token.actions.githubusercontent.com:sub":"repo:${GitHubRepo}:ref:refs/heads/main"}}}]}
+        - { Oidc: !Ref GitHubOIDC }
+      ManagedPolicyArns: [!Ref ProdDeployPolicy]
+      Tags: [{ Key: project, Value: tire-agent }]
+
+  DevDeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: tire-agent-deploy-dev
+      PolicyDocument: !Sub
+        - |
+          {"Version":"2012-10-17","Statement":[
+            {"Sid":"Stack","Effect":"Allow","Action":"cloudformation:*",
+             "Resource":"arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/tire-agent-${S}/*"},
+            {"Sid":"SamTransform","Effect":"Allow","Action":"cloudformation:CreateChangeSet",
+             "Resource":"arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"},
+            {"Sid":"TemplateReads","Effect":"Allow","Action":["cloudformation:ValidateTemplate","cloudformation:GetTemplateSummary","cloudformation:ListStacks"],"Resource":"*"},
+            {"Sid":"Artifacts","Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:ListBucket","s3:GetBucketLocation"],
+             "Resource":["arn:aws:s3:::tire-agent-artifacts-${AWS::AccountId}","arn:aws:s3:::tire-agent-artifacts-${AWS::AccountId}/*"]},
+            {"Sid":"EcrLogin","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
+            {"Sid":"EcrPublicPull","Effect":"Allow","Action":["ecr-public:GetAuthorizationToken","sts:GetServiceBearerToken"],"Resource":"*"},
+            {"Sid":"EcrPush","Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:DescribeImages","ecr:DescribeRepositories","ecr:GetRepositoryPolicy","ecr:SetRepositoryPolicy"],
+             "Resource":"arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/tire-agent"},
+            {"Sid":"Function","Effect":"Allow","Action":"lambda:*",
+             "Resource":["arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:tire-agent-${S}","arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:tire-agent-${S}:*"]},
+            {"Sid":"CreateBoundedRoles","Effect":"Allow","Action":["iam:CreateRole","iam:PutRolePolicy","iam:AttachRolePolicy","iam:DetachRolePolicy","iam:DeleteRolePolicy"],
+             "Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*",
+             "Condition":{"StringEquals":{"iam:PermissionsBoundary":"${Boundary}"}}},
+            {"Sid":"ManageOwnRoles","Effect":"Allow","Action":["iam:GetRole","iam:GetRolePolicy","iam:DeleteRole","iam:TagRole","iam:UntagRole","iam:UpdateAssumeRolePolicy","iam:ListRolePolicies","iam:ListAttachedRolePolicies"],
+             "Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*"},
+            {"Sid":"PassOwnRoles","Effect":"Allow","Action":"iam:PassRole","Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*",
+             "Condition":{"StringEquals":{"iam:PassedToService":["lambda.amazonaws.com","events.amazonaws.com","scheduler.amazonaws.com"]}}},
+            {"Sid":"NoBoundaryEscape","Effect":"Deny","Action":["iam:DeleteRolePermissionsBoundary","iam:PutRolePermissionsBoundary"],"Resource":"*"},
+            {"Sid":"Table","Effect":"Allow","Action":"dynamodb:*","Resource":"arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/tire-agent-${S}-*"},
+            {"Sid":"Topic","Effect":"Allow","Action":"sns:*","Resource":"arn:aws:sns:${AWS::Region}:${AWS::AccountId}:tire-agent-${S}-*"},
+            {"Sid":"Alarms","Effect":"Allow","Action":["cloudwatch:PutMetricAlarm","cloudwatch:DeleteAlarms","cloudwatch:TagResource","cloudwatch:UntagResource"],
+             "Resource":"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:tire-agent-${S}-*"},
+            {"Sid":"AlarmReads","Effect":"Allow","Action":["cloudwatch:DescribeAlarms"],"Resource":"*"},
+            {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogGroup","logs:DeleteLogGroup","logs:PutRetentionPolicy","logs:DeleteRetentionPolicy","logs:TagResource","logs:UntagResource","logs:TagLogGroup","logs:PutMetricFilter","logs:DeleteMetricFilter","logs:DescribeMetricFilters","logs:ListTagsForResource"],
+             "Resource":["arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tire-agent-${S}","arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tire-agent-${S}:*"]},
+            {"Sid":"LogReads","Effect":"Allow","Action":"logs:DescribeLogGroups","Resource":"*"},
+            {"Sid":"Schedule","Effect":"Allow","Action":["events:PutRule","events:DeleteRule","events:DescribeRule","events:PutTargets","events:RemoveTargets","events:TagResource","events:UntagResource"],
+             "Resource":"arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/tire-agent-${S}-*"},
+            {"Sid":"Secrets","Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters"],"Resource":"arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tire-agent/*"},
+            {"Sid":"EvalGateModel","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
+             "Resource":["arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-5-5","arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5"]},
+            {"Sid":"AccountCheck","Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}
+          ]}
+        - { S: dev, Boundary: !Ref AppBoundary }
+
+  ProdDeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: tire-agent-deploy-prod
+      PolicyDocument: !Sub
+        - |
+          {"Version":"2012-10-17","Statement":[
+            {"Sid":"Stack","Effect":"Allow","Action":"cloudformation:*",
+             "Resource":"arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/tire-agent-${S}/*"},
+            {"Sid":"SamTransform","Effect":"Allow","Action":"cloudformation:CreateChangeSet",
+             "Resource":"arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"},
+            {"Sid":"TemplateReads","Effect":"Allow","Action":["cloudformation:ValidateTemplate","cloudformation:GetTemplateSummary","cloudformation:ListStacks"],"Resource":"*"},
+            {"Sid":"Artifacts","Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:ListBucket","s3:GetBucketLocation"],
+             "Resource":["arn:aws:s3:::tire-agent-artifacts-${AWS::AccountId}","arn:aws:s3:::tire-agent-artifacts-${AWS::AccountId}/*"]},
+            {"Sid":"EcrLogin","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
+            {"Sid":"EcrPublicPull","Effect":"Allow","Action":["ecr-public:GetAuthorizationToken","sts:GetServiceBearerToken"],"Resource":"*"},
+            {"Sid":"EcrPush","Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:DescribeImages","ecr:DescribeRepositories","ecr:GetRepositoryPolicy","ecr:SetRepositoryPolicy"],
+             "Resource":"arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/tire-agent"},
+            {"Sid":"Function","Effect":"Allow","Action":"lambda:*",
+             "Resource":["arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:tire-agent-${S}","arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:tire-agent-${S}:*"]},
+            {"Sid":"CreateBoundedRoles","Effect":"Allow","Action":["iam:CreateRole","iam:PutRolePolicy","iam:AttachRolePolicy","iam:DetachRolePolicy","iam:DeleteRolePolicy"],
+             "Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*",
+             "Condition":{"StringEquals":{"iam:PermissionsBoundary":"${Boundary}"}}},
+            {"Sid":"ManageOwnRoles","Effect":"Allow","Action":["iam:GetRole","iam:GetRolePolicy","iam:DeleteRole","iam:TagRole","iam:UntagRole","iam:UpdateAssumeRolePolicy","iam:ListRolePolicies","iam:ListAttachedRolePolicies"],
+             "Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*"},
+            {"Sid":"PassOwnRoles","Effect":"Allow","Action":"iam:PassRole","Resource":"arn:aws:iam::${AWS::AccountId}:role/tire-agent-${S}-*",
+             "Condition":{"StringEquals":{"iam:PassedToService":["lambda.amazonaws.com","events.amazonaws.com","scheduler.amazonaws.com"]}}},
+            {"Sid":"NoBoundaryEscape","Effect":"Deny","Action":["iam:DeleteRolePermissionsBoundary","iam:PutRolePermissionsBoundary"],"Resource":"*"},
+            {"Sid":"Table","Effect":"Allow","Action":"dynamodb:*","Resource":"arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/tire-agent-${S}-*"},
+            {"Sid":"Topic","Effect":"Allow","Action":"sns:*","Resource":"arn:aws:sns:${AWS::Region}:${AWS::AccountId}:tire-agent-${S}-*"},
+            {"Sid":"Alarms","Effect":"Allow","Action":["cloudwatch:PutMetricAlarm","cloudwatch:DeleteAlarms","cloudwatch:TagResource","cloudwatch:UntagResource"],
+             "Resource":"arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:tire-agent-${S}-*"},
+            {"Sid":"AlarmReads","Effect":"Allow","Action":["cloudwatch:DescribeAlarms"],"Resource":"*"},
+            {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogGroup","logs:DeleteLogGroup","logs:PutRetentionPolicy","logs:DeleteRetentionPolicy","logs:TagResource","logs:UntagResource","logs:TagLogGroup","logs:PutMetricFilter","logs:DeleteMetricFilter","logs:DescribeMetricFilters","logs:ListTagsForResource"],
+             "Resource":["arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tire-agent-${S}","arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tire-agent-${S}:*"]},
+            {"Sid":"LogReads","Effect":"Allow","Action":"logs:DescribeLogGroups","Resource":"*"},
+            {"Sid":"Schedule","Effect":"Allow","Action":["events:PutRule","events:DeleteRule","events:DescribeRule","events:PutTargets","events:RemoveTargets","events:TagResource","events:UntagResource"],
+             "Resource":"arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/tire-agent-${S}-*"},
+            {"Sid":"Secrets","Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters"],"Resource":"arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/tire-agent/*"},
+            {"Sid":"EvalGateModel","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
+             "Resource":["arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-5-5","arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5"]},
+            {"Sid":"AccountCheck","Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}
+          ]}
+        - { S: prod, Boundary: !Ref AppBoundary }
+
+  BedrockBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetName: tire-agent-bedrock-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: 5, Unit: USD }
+        CostFilters: { Service: [Amazon Bedrock] }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+
+Outputs:
+  DevDeployRoleArn: { Value: !GetAtt DevDeployRole.Arn }
+  ProdDeployRoleArn: { Value: !GetAtt ProdDeployRole.Arn }
+  AppBoundaryArn: { Value: !Ref AppBoundary }
+  ArtifactsBucketName: { Value: !Ref ArtifactsBucket }
+  ImageRepoUri: { Value: !GetAtt ImageRepo.RepositoryUri }
