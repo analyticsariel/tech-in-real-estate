@@ -76,6 +76,14 @@ COLUMN_NOTES = """\
 metric_summary is pre-computed. Use it for every "latest / change / trend / compare" question:
   one row per metric (key) and geography. role = 'primary' (the page's featured geography) or 'benchmark'
   (Florida / United States comparison on the same page). latest_value at latest_date.
+county_summary: the same latest / window / streak columns for one Florida county (county = slug, e.g.
+  'manatee'), one row per metric and county. grain = 'county' (the county's own series) or 'metro' (the
+  source publishes only the county's metro; geo_label names the metro). thin_latest = 1: the latest value
+  rests on a small sample; thin_12m: thin points in the 12-month window. url is the county's view
+  (?county=slug); cite it. No row = the source doesn't publish that metric for the county. To compare with
+  Florida / US, use the benchmark rows in metric_summary when their aligned_date equals the county's
+  latest_date; otherwise read the benchmark from observations at the county's latest_date.
+county_forecasts: forecasts (same columns as forecasts) for a county's view, with county = slug.
   {1m,3m,12m} windows: from_date_*, from_value_*, change_* (latest - from, in the metric's units;
   percent units -> percentage points), pct_change_* (relative %), direction_* ('rising'|'falling'|'flat').
   NULL means no observation for that window. Say it's not available; never substitute another month.
@@ -87,7 +95,10 @@ metric_summary is pre-computed. Use it for every "latest / change / trend / comp
 forecasts: horizon-shaped forecasts (Zillow ZHVF/ZORF). One row per horizon: value is the cumulative % change
   Zillow expects from base_month to target_month (horizon_months later). is_past = 1: that horizon has
   already ended, so it's an old forecast, not a prediction.
-observations: raw history (key, geo_key, geo_label, role, date, value) for questions summary can't answer.
+observations: raw history (key, geo_key, geo_label, role, date, value, quality) for questions summary can't
+  answer. County data uses geo_key = the county row's geo_key (county_12081 or metro_35840); quality = 'thin'
+  marks small-sample points.
+counties: the 67 Florida counties (fips, slug, name, population, metro_cbsa, metro_title, aliases).
 metrics: one row per metric page (title, units, frequency, geo_label, why_it_matters, url).
 routes: every live site URL you may cite."""
 
@@ -99,6 +110,10 @@ FROM metric_summary WHERE key = 'mortgage_30y' AND role = 'primary';
 SELECT geo_label, role, latest_value, latest_date, aligned_value, aligned_date,
        from_date_12m, change_12m, aligned_from_date_12m, aligned_change_12m, url
 FROM metric_summary WHERE key = 'bls_hillsborough_unemployment_rate';
+-- one Florida county (search returns its slug in `places`)
+SELECT geo_label, grain, latest_value, latest_date, from_date_3m, change_3m, direction_3m,
+       thin_latest, thin_12m, url
+FROM county_summary WHERE key = 'redfin_median_sale_price' AND county = 'manatee';
 -- a published forecast, every horizon
 SELECT geo_label, role, base_month, horizon_months, target_month, value, is_past, url
 FROM forecasts WHERE key = 'zillow_zhvf' ORDER BY role DESC, horizon_months;
@@ -171,7 +186,16 @@ def _run(
 
 
 def schema_text(conn: sqlite3.Connection) -> str:
-    tables = ["metric_summary", "forecasts", "observations", "metrics", "routes"]
+    tables = [
+        "metric_summary",
+        "county_summary",
+        "forecasts",
+        "county_forecasts",
+        "observations",
+        "metrics",
+        "counties",
+        "routes",
+    ]
     lines = []
     for t in tables:
         cols = [r[0] for r in conn.execute(f"SELECT * FROM {t} LIMIT 0").description]
@@ -200,45 +224,141 @@ def _has_word(term: str, text: str) -> bool:
     return re.search(rf"\b{re.escape(stem)}(s|es)?\b", text) is not None
 
 
-def _coverage(terms: list[str], text: str, geo: str | None) -> float:
+def _coverage(
+    terms: list[str],
+    text: str,
+    geo: str | None,
+    place_words: frozenset[str] = frozenset(),
+) -> float:
     """Query words found in a page's key/title/tags, plus half a point per word matching the page's
-    geography: a tiebreaker so "Tampa rent" prefers Tampa rent pages without outranking the topic."""
+    geography: a tiebreaker so "Tampa rent" prefers Tampa rent pages without outranking the topic.
+    Resolved place words (#192) only ever earn the tiebreaker: tags carry each page's geography, so as
+    topic words "Hillsborough County" would outrank the mortgage rate on "mortgage rate in Hillsborough"."""
     text = text.lower().replace("_", " ").replace("-", " ")
     geo = (geo or "").lower().replace("-", " ")
-    text_hits = {t for t in terms if _has_word(t, text)}
+    text_hits = {t for t in terms if t not in place_words and _has_word(t, text)}
     geo_hits = {t for t in terms if _has_word(t, geo)}
     # The place bonus only counts when the page also matches the topic, so "Hillsborough unemployment"
     # doesn't surface every Hillsborough page.
     return len(text_hits) + (0.5 * len(geo_hits) if text_hits - geo_hits else 0.0)
 
 
+def _norm(text: str) -> str:
+    """Case-preserving normalization shared by place terms and questions: drop . ' ’, hyphens to spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[.'’]", "", text).replace("-", " "))
+
+
+def find_places(conn: sqlite3.Connection, question: str) -> tuple[list[dict], str]:
+    """Florida counties a question names, by county name, "X County", or city alias (#189, #192).
+
+    Longest terms match first ("Palm Beach Gardens" before "Palm Beach") and are blanked out, so they can't
+    match again or count as unmatched topic words. Ambiguous bare names ("lake", "orange") count only when
+    capitalized or followed by "county". Returns (places, the question with place names removed)."""
+    rows = _run(conn, "SELECT term, fips, slug, ambiguous FROM places", capped=False)
+    if "error" in rows:
+        return [], question
+    text = _norm(question)
+    found: dict[str, dict] = {}
+    for term, fips, slug, ambiguous in sorted(rows["rows"], key=lambda r: -len(r[0])):
+        pattern = rf"\b{re.escape(_norm(term))}\b"
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            after = text[m.end() :].lower()
+            if ambiguous and not (
+                m.group(0)[0].isupper() or after.startswith(" county")
+            ):
+                continue
+            found.setdefault(fips, {"slug": slug, "matched": m.group(0)})
+            text = text[: m.start()] + " " * (m.end() - m.start()) + text[m.end() :]
+            break
+    if not found:
+        return [], question
+    meta = _run(
+        conn,
+        f"SELECT fips, name, metro_title FROM counties WHERE fips IN ({','.join('?' * len(found))})",
+        tuple(found),
+        capped=False,
+    )
+    places = [
+        {
+            "county": name,
+            "slug": found[fips]["slug"],
+            "fips": fips,
+            "metro": metro,
+            "matched": found[fips]["matched"],
+        }
+        for fips, name, metro in meta.get("rows", [])
+    ]
+    return places, text
+
+
 def search_pages(conn: sqlite3.Connection, query: str, limit: int = 6) -> dict:
-    """FTS5 search over live pages, enriched with each metric's latest value and units."""
+    """FTS5 search over live pages, enriched with each metric's latest value and units. When the question
+    names a Florida county, metric hits carry that county's view (value, grain, thin flag, ?county= url)."""
+    places, rest = find_places(conn, query)
+    # "Florida" names the state, never a topic: geography for the tiebreaker, not a match on "Florida" tags.
+    place_words = frozenset(_terms(" ".join(p["matched"] for p in places))) | {
+        "florida"
+    }
+    # "X County" left after Florida places are removed is a county we don't cover (Cook County, Harris
+    # County). Its name may still appear somewhere in site text, so unmatched_terms can't be relied on.
+    outside = sorted(
+        {
+            f"{m.group(1)} County"
+            for m in re.finditer(r"\b([A-Za-z]+) county\b", rest, re.IGNORECASE)
+        }
+    )
+    if outside:
+        return {
+            "outside_florida": outside,
+            "hint": "the site covers Florida's 67 counties, Florida, and the US; it has no data for these",
+        }
+    # Place words stay in the search and ranking (the geo tiebreaker still prefers "Tampa" pages for
+    # "Tampa rents") but never count as unmatched: the site covers every Florida county.
     terms = _terms(query)
-    if not terms:
+    if not set(terms) - place_words:
+        if places:
+            return {
+                "places": places,
+                "hint": "a Florida county with no topic; search again with the metric or topic",
+            }
         return {"error": "no searchable words; describe the metric, place, or skill"}
-    fts = " OR ".join(f'"{t}"' for t in terms)
+    # Full-text matching is on topic words only. Every page's tags carry its geography, so place words
+    # in the MATCH would rank Hillsborough-featured pages above a national answer (#192); places still
+    # count in the ranking's geography tiebreaker below.
+    fts = " OR ".join(f'"{t}"' for t in terms if t not in place_words)
     limit = max(1, min(int(limit), SEARCH_LIMIT_MAX))
     res = _run(
         conn,
         """
         SELECT p.kind, p.key, p.title, p.url, p.tags, snippet(pages, 5, '', '', ' … ', 14) AS snippet,
                m.units, m.geo_label, m.why_it_matters,
-               s.latest_value, s.latest_date, s.is_forecast
+               s.latest_value, s.latest_date, s.is_forecast,
+               c.url AS county_url, c.geo_label AS county_geo_label, c.grain AS county_grain,
+               c.latest_value AS county_latest_value, c.latest_date AS county_latest_date,
+               c.thin_latest AS county_thin_latest
         FROM pages p
         LEFT JOIN metrics m ON m.key = p.key AND p.kind IN ('metric', 'reading')
         LEFT JOIN metric_summary s ON s.key = p.key AND s.role = 'primary' AND p.kind IN ('metric', 'reading')
+        LEFT JOIN county_summary c ON c.key = p.key AND c.county = ? AND p.kind IN ('metric', 'reading')
         WHERE pages MATCH ? ORDER BY {_BM25} LIMIT ?""".replace("{_BM25}", _BM25),
-        (fts, CANDIDATE_POOL),
+        (places[0]["slug"] if places else None, fts, CANDIDATE_POOL),
         capped=False,
     )
     if "error" in res:
         return res
     rows = [dict(zip(res["columns"], r, strict=True)) for r in res["rows"]]
     # Stable sort: most query words covered in key/title/tags first, bm25 order within ties.
+    # With a named county, a county's own series beats its metro's on ties (Redfin county price over Zillow
+    # metro price). National pages have no county view and keep bm25 order against county pages.
     rows.sort(
         key=lambda r: (
-            -_coverage(terms, f"{r['key']} {r['title']} {r['tags']}", r["geo_label"])
+            -_coverage(
+                terms,
+                f"{r['key']} {r['title']} {r['tags']}",
+                r["geo_label"],
+                place_words,
+            ),
+            int(places != [] and r.get("county_grain") == "metro"),
         )
     )
     hits, seen = [], set()
@@ -250,6 +370,8 @@ def search_pages(conn: sqlite3.Connection, query: str, limit: int = 6) -> dict:
         hit = {k: v for k, v in row.items() if v is not None}
         if hit.get("kind") == "reading":
             hit["kind"] = "metric"
+        if places and hit["kind"] == "metric":
+            _county_hit(hit)
         if "why_it_matters" in hit:
             hit["why_it_matters"] = hit["why_it_matters"][:240]
         hits.append(hit)
@@ -259,7 +381,8 @@ def search_pages(conn: sqlite3.Connection, query: str, limit: int = 6) -> dict:
     unmatched = [
         t
         for t in terms
-        if not _run(
+        if t not in place_words
+        and not _run(
             conn, "SELECT 1 FROM pages WHERE pages MATCH ? LIMIT 1", (f'"{t}"',)
         ).get("rows")
     ]
@@ -267,13 +390,37 @@ def search_pages(conn: sqlite3.Connection, query: str, limit: int = 6) -> dict:
         return {
             "error": "no matching pages",
             "unmatched_terms": unmatched,
-            "hint": "the site covers Tampa / Hillsborough County, Florida, and US data",
+            "hint": "the site covers all 67 Florida counties, Florida, and US data",
         }
-    return (
-        {"results": hits, "unmatched_terms": unmatched}
-        if unmatched
-        else {"results": hits}
+    out: dict = {"results": hits}
+    if places:
+        out = {"places": places, **out}
+    if unmatched:
+        out["unmatched_terms"] = unmatched
+    return out
+
+
+def _county_hit(hit: dict) -> None:
+    """Swap a metric hit's featured-geo numbers for the named county's view, or say it isn't published."""
+    county = {
+        k.removeprefix("county_"): hit.pop(k)
+        for k in list(hit)
+        if k.startswith("county_")
+    }
+    if not county:
+        hit["county_view"] = (
+            "not published for this county; the values shown are the page's default geography"
+        )
+        return
+    hit.update(
+        url=county["url"],
+        geo_label=county["geo_label"],
+        latest_value=county["latest_value"],
+        latest_date=county["latest_date"],
+        grain=county["grain"],
     )
+    if county.get("thin_latest"):
+        hit["thin_latest"] = 1
 
 
 def make_tools(db_path: Path | None = None) -> list[StructuredTool]:
@@ -303,7 +450,9 @@ def make_tools(db_path: Path | None = None) -> list[StructuredTool]:
             "Metric hits include key, url, geography, units, latest value/date, why it matters, and is_forecast, "
             "enough to recommend pages without querying each. Use the key with `query` for exact numbers. "
             "`unmatched_terms` lists words that appear nowhere on the site: if a place or topic is unmatched, "
-            "the site has no data on it, so say so instead of answering with something else."
+            "the site has no data on it, so say so instead of answering with something else. "
+            "`places` lists Florida counties the question names (by county or city); metric hits then show that "
+            "county's value, grain and ?county= url. `outside_florida` means a county the site doesn't cover."
         ),
     )
     query_tool = StructuredTool.from_function(

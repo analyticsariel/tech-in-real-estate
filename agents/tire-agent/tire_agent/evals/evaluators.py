@@ -94,6 +94,13 @@ def correct_answer(outputs: dict, reference_outputs: dict) -> dict:
         for f in reference_outputs["facts"]
         if not fact_ok(f, text)
     ]
+    # mentions: each entry is a regex of alternatives the answer must contain (S21.H, #192), e.g. that a
+    # thin county value is called thin data, or that a metro-only view says it's metro data.
+    missing += [
+        f"mention /{m}/"
+        for m in reference_outputs.get("mentions", [])
+        if not re.search(m, text, re.IGNORECASE)
+    ]
     ok = status == "answered" and not missing
     return {
         "key": "correct_answer",
