@@ -33,10 +33,16 @@ def _fill(obj, row: dict):
 
 
 def _resolve_fact(db: sqlite3.Connection, fact: dict, columns: set[str]) -> dict:
+    """A metric_summary cell ({key, geo_role, geo_label?, field}), or with `county` a county_summary
+    cell ({key, county, field}; S21.H, #192)."""
     if fact["field"] not in columns:
         raise DatasetError(f"unknown metric_summary field {fact['field']!r}")
-    sql = f"SELECT {fact['field']}, units, frequency FROM metric_summary WHERE key = ? AND role = ?"
-    args = [fact["key"], fact["geo_role"]]
+    if fact.get("county"):
+        sql = f"SELECT {fact['field']}, units, frequency FROM county_summary WHERE key = ? AND county = ?"
+        args = [fact["key"], fact["county"]]
+    else:
+        sql = f"SELECT {fact['field']}, units, frequency FROM metric_summary WHERE key = ? AND role = ?"
+        args = [fact["key"], fact["geo_role"]]
     if fact.get("geo_label"):
         sql += " AND geo_label = ?"
         args.append(fact["geo_label"])
@@ -54,7 +60,9 @@ def resolve(
     records = yaml.safe_load(golden.read_text())["records"]
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
         routes = {r[0] for r in db.execute("SELECT url FROM routes")}
-        columns = {r[1] for r in db.execute("PRAGMA table_info(metric_summary)")}
+        columns = {r[1] for r in db.execute("PRAGMA table_info(metric_summary)")} | {
+            r[1] for r in db.execute("PRAGMA table_info(county_summary)")
+        }
         examples, skipped, problems = [], [], []
         for rec in records:
             try:
@@ -98,6 +106,7 @@ def resolve(
                                 "cites_any": exp.get("cites_any", []),
                                 "must_not_cite": exp.get("must_not_cite", []),
                                 "facts": facts,
+                                "mentions": exp.get("mentions", []),
                                 "must_say": exp.get("must_say", []),
                                 "must_not_say": exp.get("must_not_say", []),
                                 "git_sha": git_sha,

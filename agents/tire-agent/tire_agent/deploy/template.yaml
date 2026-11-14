@@ -27,6 +27,7 @@ Parameters:
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  IsProd: !Equals [!Ref Stage, prod]
 
 Resources:
   LimitsTable:
@@ -81,7 +82,9 @@ Resources:
           TIRE_HISTORY_TABLE: !Ref HistoryTable
           TIRE_CLERK_ISSUER: !Ref ClerkIssuer
           TIRE_AUTH_ORIGINS: !Join [",", !Ref SiteOrigins]
-          TIRE_TURNSTILE_PARAM: /tire-agent/turnstile-secret
+          # Non-prod uses Cloudflare's published always-pass test secret, so previews and staging (test
+          # sitekey) work on any hostname. Prod's real secret rejects test tokens (#180).
+          TIRE_TURNSTILE_PARAM: !If [IsProd, /tire-agent/turnstile-secret, /tire-agent/turnstile-secret-test]
           TIRE_DEVICE_PARAM: /tire-agent/device-secret
           LANGSMITH_TRACING: "true"
           LANGSMITH_PROJECT: !Sub tire-agent-${Stage}

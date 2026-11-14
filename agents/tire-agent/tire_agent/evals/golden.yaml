@@ -15,7 +15,10 @@
 #     must_not_cite: URL prefixes that must not appear.
 #     facts:        metric_summary cells the answer must state correctly:
 #                   {key, geo_role (primary|benchmark), geo_label?, field}
+#                   or county_summary cells: {key, county (slug), field}  (S21.H, #192)
 #                   numbers within tolerance, directions as exact words.
+#     mentions:     regexes the answer must match (scored with correct_answer, #192), e.g. that a
+#                   thin county value is called thin data. Use alternatives so phrasing can vary.
 #     must_say:     concepts the answer must express (judge-checked, e.g. "forecast").
 #     must_not_say: concepts the answer must not express (judge-checked).
 #     refuse:       true if the right answer is "the site can't answer that".
@@ -157,3 +160,75 @@ records:
       must_say: [TiRE has no Austin data]
       must_not_say: [buy or don't-buy advice]
     notes: One or two calls max (the spike used its whole budget here). No national numbers dressed up as an Austin answer.
+
+  # ---- Florida counties (S21.H, decision #192). Selectors pick live cases, so refreshes can't rot them.
+
+  - id: county-trend-manatee-unemployment
+    category: trend
+    question: Is unemployment in Manatee County rising or falling over the last three months, and by how much?
+    expect:
+      cites: ["/metric/bls/bls_hillsborough_unemployment_rate?county=manatee"]
+      facts:
+        - {key: bls_hillsborough_unemployment_rate, county: manatee, field: direction_3m}
+        - {key: bls_hillsborough_unemployment_rate, county: manatee, field: change_3m}
+    notes: >
+      The question that started Sprint 21: the first live /ask question was about Manatee and got declined.
+      County-grain LAUS, so the answer must use Manatee's own series (not the North Port metro's) and cite
+      the ?county=manatee view.
+
+  - id: county-thin-selector
+    category: lookup
+    select: >
+      SELECT s.key, s.county, c.name, s.url
+      FROM county_summary s JOIN counties c ON c.slug = s.county
+      WHERE s.key = 'redfin_median_sale_price' AND s.thin_latest = 1 AND s.is_forecast = 0
+      ORDER BY c.population DESC LIMIT 1
+    question: What's the median sale price in {name}?
+    expect:
+      cites: ["{url}"]
+      facts:
+        - {key: "{key}", county: "{county}", field: latest_value}
+      mentions: ["thin|small sample|few (home )?sales|limited sales|low (sales )?volume"]
+    notes: >
+      The largest county whose latest Redfin month is flagged thin (under 20 sales). The answer states the
+      number and says it rests on a small sample, without calling a trend.
+
+  - id: county-not-published-selector
+    category: out_of_scope
+    select: >
+      SELECT 'zillow_zori' AS key, c.name
+      FROM counties c
+      WHERE NOT EXISTS (SELECT 1 FROM county_summary s WHERE s.key = 'zillow_zori' AND s.county = c.slug)
+      ORDER BY c.population DESC LIMIT 1
+    question: What's the Zillow Observed Rent Index (ZORI) for {name}?
+    expect:
+      refuse: true
+      must_say: [Zillow doesn't publish ZORI for this county or its metro]
+    notes: >
+      A metric the source publishes for neither the county nor a metro containing it. The agent says it
+      isn't published there and quotes no numbers: no borrowing Hillsborough's or Florida's value.
+
+  - id: county-metro-only-selector
+    category: lookup
+    select: >
+      SELECT s.key, s.county, c.name, s.url
+      FROM county_summary s JOIN counties c ON c.slug = s.county
+      WHERE s.key = 'zillow_median_sale_price' AND s.grain = 'metro' AND c.metro_cbsa <> '45300'
+      ORDER BY c.population DESC LIMIT 1
+    question: What does Zillow say the median sale price is in {name}?
+    expect:
+      cites: ["{url}"]
+      facts:
+        - {key: "{key}", county: "{county}", field: latest_value}
+      mentions: ["metro"]
+    notes: >
+      Zillow publishes this series for metros only. Outside Tampa, the answer gives the county's metro value
+      and says it's metro data (naming the metro), not the county's own number.
+
+  - id: county-outside-florida
+    category: out_of_scope
+    question: What's the median home value in Cook County, Illinois?
+    expect:
+      refuse: true
+    notes: The site covers Florida's 67 counties. Any other county declines with no numbers.
+

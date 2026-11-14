@@ -4,7 +4,8 @@
 
 Inputs: agents/data/*.yaml catalogs, site/data/history/*.json,
 site/data/readings/*.md, agents/data/skills.yaml + skill bodies,
-agents/data/agents.yaml, and site/app routes.
+agents/data/agents.yaml, site/app routes, and (Sprint 21, decision #192) the county geo store
+site/data/geo/{state}/*.csv with agents/data/counties.yaml.
 
 Fails loudly: every problem is collected and raised together, and nothing is
 written unless the whole build succeeds. The output is swapped in atomically.
@@ -13,6 +14,7 @@ written unless the whole build succeeds. The output is swapped in atomically.
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import json
 import re
@@ -45,9 +47,9 @@ CREATE TABLE metrics (
 );
 CREATE TABLE observations (
   key TEXT NOT NULL, geo_key TEXT NOT NULL, geo_label TEXT, role TEXT NOT NULL,
-  date TEXT NOT NULL, value REAL NOT NULL
-);
-CREATE INDEX obs_key_geo_date ON observations (key, geo_key, date);
+  date TEXT NOT NULL, value REAL NOT NULL, quality TEXT,
+  PRIMARY KEY (key, geo_key, role, date)
+) WITHOUT ROWID;  -- the key is the lookup path; a separate index doubled the file (#192)
 CREATE TABLE metric_summary (
   key TEXT NOT NULL, geo_key TEXT NOT NULL, geo_label TEXT, role TEXT NOT NULL,
   units TEXT, frequency TEXT,
@@ -66,6 +68,31 @@ CREATE TABLE metric_summary (
   is_forecast INTEGER NOT NULL,
   url TEXT NOT NULL
 );
+-- Florida county views (S21.H, #192), kept out of metric_summary so `WHERE key = ...` there still returns
+-- one page's primary + benchmarks. One row per metric x county, resolved like the site's picker.
+CREATE TABLE county_summary (
+  key TEXT NOT NULL, county TEXT NOT NULL, geo_key TEXT NOT NULL, geo_label TEXT, grain TEXT NOT NULL,
+  units TEXT, frequency TEXT,
+  latest_date TEXT, latest_value REAL,
+  from_date_1m TEXT, from_value_1m REAL, change_1m REAL, pct_change_1m REAL, direction_1m TEXT,
+  from_date_3m TEXT, from_value_3m REAL, change_3m REAL, pct_change_3m REAL, direction_3m TEXT,
+  from_date_12m TEXT, from_value_12m REAL, change_12m REAL, pct_change_12m REAL, direction_12m TEXT,
+  streak_count INTEGER, streak_direction TEXT,
+  thin_latest INTEGER NOT NULL, thin_12m INTEGER NOT NULL,
+  is_forecast INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  PRIMARY KEY (key, county)
+);
+CREATE TABLE county_forecasts (
+  key TEXT NOT NULL, county TEXT NOT NULL, geo_key TEXT NOT NULL, geo_label TEXT,
+  base_month TEXT NOT NULL, horizon_months INTEGER NOT NULL, target_month TEXT NOT NULL,
+  value REAL NOT NULL, is_past INTEGER NOT NULL, url TEXT NOT NULL
+);
+CREATE TABLE counties (
+  fips TEXT PRIMARY KEY, slug TEXT NOT NULL, name TEXT NOT NULL, population INTEGER,
+  metro_cbsa TEXT, metro_title TEXT, aliases TEXT
+);
+CREATE TABLE places (term TEXT NOT NULL, fips TEXT NOT NULL, slug TEXT NOT NULL, ambiguous INTEGER NOT NULL);
 CREATE TABLE forecasts (
   key TEXT NOT NULL, geo_key TEXT NOT NULL, geo_label TEXT, role TEXT NOT NULL,
   base_month TEXT NOT NULL, horizon_months INTEGER NOT NULL, target_month TEXT NOT NULL,
@@ -139,6 +166,142 @@ def series_for(key: str, history: dict, entry: dict) -> list[dict]:
     ]
 
 
+# The site's default county view (site/lib/county-view.ts DEFAULT_COUNTY, #190). Its canonical URL is the plain
+# metric page: the picker drops ?county= for it, so the agent must cite it without the parameter.
+DEFAULT_COUNTY = "hillsborough"
+
+# Bare county names that are also everyday words. In a question they mean the county only when followed
+# by "county" or written capitalized ("Lake", not "lake view"); the rest ("manatee", "pinellas") always do.
+AMBIGUOUS_NAMES = {
+    "baker", "bay", "citrus", "clay", "columbia", "franklin", "glades", "gulf", "hamilton", "highlands",
+    "holmes", "jackson", "jefferson", "lake", "lee", "levy", "liberty", "madison", "marion", "monroe",
+    "orange", "taylor", "union", "washington",
+}  # fmt: skip
+
+
+def load_counties(repo: Path) -> dict:
+    """counties.yaml (decision #173) indexed for the build: counties, metro titles, state."""
+    cat = _yaml(repo / "agents/data/counties.yaml")
+    return {
+        "state": cat["state"],
+        "counties": cat["counties"],
+        "metro_titles": {m["cbsa"]: m["title"] for m in cat["metros"]},
+    }
+
+
+def county_label(c: dict, state: dict) -> str:
+    return f"{c['name']}, {state['name']}"
+
+
+def place_rows(geo: dict) -> list[tuple]:
+    """(term, fips, slug, ambiguous) for county names, bare names and aliases (#189), lower-cased."""
+    rows = []
+    for c in geo["counties"]:
+        bare = c["name"].removesuffix(" County").lower()
+        rows.append((f"{bare} county", c["fips"], c["slug"], 0))
+        rows.append((bare, c["fips"], c["slug"], int(bare in AMBIGUOUS_NAMES)))
+        rows += [(a.lower(), c["fips"], c["slug"], 0) for a in c.get("aliases") or []]
+    return rows
+
+
+def read_geo_csv(path: Path) -> dict[tuple[str, str], list[dict]]:
+    """{(geo_type, geo_id): ascending [{date, value, quality}]} from one store file (#175)."""
+    out: dict[tuple[str, str], list[dict]] = {}
+    with path.open() as f:
+        for r in csv.DictReader(f):
+            out.setdefault((r["geo_type"], r["geo_id"]), []).append(
+                {"date": r["date"], "value": float(r["value"]), "quality": r["quality"]}
+            )
+    for obs in out.values():
+        obs.sort(key=lambda o: o["date"])
+    return out
+
+
+def county_view(
+    geos: dict, county: dict, metro_titles: dict, state: dict
+) -> tuple[str, str, str, list[dict]] | None:
+    """The picker's rule (#190): the county's rows, else its metro's, else None (not published).
+    Returns (grain, geo_key, geo_label, obs)."""
+    own = geos.get(("county", county["fips"]))
+    if own:
+        return "county", f"county_{county['fips']}", county_label(county, state), own
+    metro = county.get("metro")
+    if metro and geos.get(("metro", metro)):
+        return "metro", f"metro_{metro}", metro_titles[metro], geos[("metro", metro)]
+    return None
+
+
+def thin_counts(obs: list[dict], from_date_12m: str | None) -> tuple[int, int]:
+    """(latest is thin, thin points in the 12-month window after from_date_12m through latest)."""
+    latest_thin = int(obs[-1].get("quality") == "thin")
+    start = from_date_12m or obs[-1]["date"]
+    window = [o for o in obs if o["date"] > start] or obs[-1:]
+    return latest_thin, sum(o.get("quality") == "thin" for o in window)
+
+
+def geo_rows(
+    e: dict, url: str, freq: str, path: Path, geo: dict, today: dt.date
+) -> tuple[list, list, list, list[str]]:
+    """Store rows for one metric: observations once per real geography, plus one summary row per county
+    (role 'county') resolved like the picker, citing the exact ?county= view."""
+    geos = read_geo_csv(path)
+    obs_rows, summary_rows, forecast_rows, urls = [], [], [], []
+    for (gtype, gid), obs in geos.items():
+        # geo_label stays NULL on store rows: it would repeat on every month of ~500k rows, and
+        # metric_summary / counties carry it (#192).
+        obs_rows += [
+            (
+                e["key"],
+                f"{gtype}_{gid}",
+                None,
+                gtype,
+                o["date"],
+                o["value"],
+                o["quality"],
+            )
+            for o in obs
+        ]
+    horizons = e.get("forecast_horizons_months")
+    for c in geo["counties"]:
+        view = county_view(geos, c, geo["metro_titles"], geo["state"])
+        if view is None:
+            continue
+        grain, geo_key, label, obs = view
+        county_url = url if c["slug"] == DEFAULT_COUNTY else f"{url}?county={c['slug']}"
+        row = summarize(obs, freq, e.get("units"))
+        if horizons:
+            try:
+                fc = forecast_horizons(obs, horizons, today)
+            except ValueError:
+                continue  # a geography without the full horizon set isn't a forecast we can state
+            forecast_rows += [
+                (e["key"], c["slug"], geo_key, label, *r.values(), county_url)
+                for r in fc
+            ]
+            row["streak_count"] = row["streak_direction"] = None
+        thin_latest, thin_12m = thin_counts(obs, row.get("from_date_12m"))
+        summary_rows.append(
+            {
+                "key": e["key"],
+                "county": c["slug"],
+                "geo_key": geo_key,
+                "geo_label": label,
+                "grain": grain,
+                "units": e.get("units"),
+                "frequency": freq,
+                **row,
+                "thin_latest": thin_latest,
+                "thin_12m": thin_12m,
+                "is_forecast": int(
+                    bool(horizons) or is_forecast(row["latest_date"], freq, today)
+                ),
+                "url": county_url,
+            }
+        )
+        urls.append(county_url)
+    return obs_rows, summary_rows, forecast_rows, urls
+
+
 def git_sha(repo: Path) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -155,6 +318,11 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
     skills = _yaml(repo / "agents/data/skills.yaml").get("skills", [])
     agents = _yaml(repo / "agents/data/agents.yaml").get("agents", [])
     routes = {r: "page" for r in static_routes(repo)}
+    # The county layer is optional so a repo without it still builds; the golden set's county records
+    # can't resolve without it, so the eval gate catches a missing catalog in a real build.
+    geo = load_counties(repo) if (repo / "agents/data/counties.yaml").exists() else None
+    geo_dir = repo / "site/data/geo" / geo["state"]["abbr"].lower() if geo else None
+    county_rows, county_fc_rows = [], []
 
     metric_rows, obs_rows, summary_rows, page_rows, forecast_rows = [], [], [], [], []
     for e in catalog:
@@ -198,7 +366,15 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
                 problems.append(f"{url}: {s['geo_key']} has no observations")
                 continue
             obs_rows += [
-                (key, s["geo_key"], s["geo_label"], s["role"], o["date"], o["value"])
+                (
+                    key,
+                    s["geo_key"],
+                    s["geo_label"],
+                    s["role"],
+                    o["date"],
+                    o["value"],
+                    None,
+                )
                 for o in obs
             ]
             row = summarize(obs, freq, e.get("units"))
@@ -241,6 +417,13 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
                     "url": url,
                 }
             )
+        geo_csv = geo_dir / f"{key}.csv" if geo_dir else None
+        if geo_csv and geo_csv.exists():
+            g_obs, g_summary, g_fc, g_urls = geo_rows(e, url, freq, geo_csv, geo, today)
+            obs_rows += g_obs
+            county_rows += g_summary
+            county_fc_rows += g_fc
+            routes.update(dict.fromkeys(g_urls, "metric"))
         # pages(kind, key, title, url, tags, body): tags carry label, geography, category so a search for
         # "Tampa rent" finds ZORI even though its title says neither word.
         tags = " ".join(
@@ -325,7 +508,27 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
         db = sqlite3.connect(tmp / "tire.db")
         db.executescript(SCHEMA)
         db.executemany("INSERT INTO metrics VALUES (?,?,?,?,?,?,?,?,?,?)", metric_rows)
-        db.executemany("INSERT INTO observations VALUES (?,?,?,?,?,?)", obs_rows)
+        db.executemany("INSERT INTO observations VALUES (?,?,?,?,?,?,?)", obs_rows)
+        db.executemany(
+            "INSERT INTO counties VALUES (?,?,?,?,?,?,?)",
+            []
+            if not geo
+            else [
+                (
+                    c["fips"],
+                    c["slug"],
+                    county_label(c, geo["state"]),
+                    c.get("population"),
+                    c.get("metro"),
+                    geo["metro_titles"].get(c.get("metro")),
+                    ", ".join(c.get("aliases") or []),
+                )
+                for c in geo["counties"]
+            ],
+        )
+        db.executemany(
+            "INSERT INTO places VALUES (?,?,?,?)", place_rows(geo) if geo else []
+        )
         cols = list(summary_rows[0])
         db.executemany(
             f"INSERT INTO metric_summary ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
@@ -333,6 +536,15 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
         )
         db.executemany(
             "INSERT INTO forecasts VALUES (?,?,?,?,?,?,?,?,?,?)", forecast_rows
+        )
+        if county_rows:
+            ccols = list(county_rows[0])
+            db.executemany(
+                f"INSERT INTO county_summary ({','.join(ccols)}) VALUES ({','.join('?' * len(ccols))})",
+                [tuple(r[c] for c in ccols) for r in county_rows],
+            )
+        db.executemany(
+            "INSERT INTO county_forecasts VALUES (?,?,?,?,?,?,?,?,?,?)", county_fc_rows
         )
         db.executemany("INSERT INTO routes VALUES (?,?)", sorted(routes.items()))
         db.executemany("INSERT INTO pages VALUES (?,?,?,?,?,?)", page_rows)
@@ -345,6 +557,9 @@ def build(repo: Path, out: Path, sha: str, today: dt.date | None = None) -> dict
                 "forecasts",
                 "routes",
                 "pages",
+                "county_summary",
+                "county_forecasts",
+                "counties",
             )
         }
         info = {

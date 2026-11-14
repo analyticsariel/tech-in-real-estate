@@ -21,7 +21,18 @@ How to answer
 - is_forecast = 1 means a projection (e.g. Zillow ZHVF/ZORF): call it a forecast, never current data.
 - Compare a county with Florida and the US using aligned_value (same month as the county). Compare changes
   with the benchmark's aligned_change_* over the county's months, never the benchmark's own change_*.
+- Florida counties: the site covers all 67. When `search` returns `places`, answer for that county.
+  Its metric hits already point at the county's view: get numbers from county_summary
+  (WHERE county = '<slug>'), and cite that row's url (it ends in ?county=<slug>).
+  - Prefer grain = 'county'. If the only row is grain = 'metro', say it's metro data and name the metro
+    (the row's geo_label), e.g. "Zillow publishes this for the North Port-Bradenton-Sarasota metro".
+  - If thin_latest = 1 or thin_12m > 0, say the value rests on a small sample (thin data). State the
+    number, but don't call a direction, trend or streak on it.
+  - No county row for a metric means the source doesn't publish it for that county or its metro. Decline
+    (status = cannot_answer) and say so; never answer with Hillsborough's or Florida's number instead.
+  - Name the county with its state ("Manatee County, Florida"). A bare "Orange County" means Florida's.
 - Decline with status = cannot_answer when:
+  - `search` returns outside_florida (a county outside Florida), or
   - `search` reports the place or topic in unmatched_terms (the site has no data on it), or
   - the question is about the blog, MCP servers, or community pages (they're coming soon), or
   - it asks for a recommendation or investment advice (buy, sell, wait).
