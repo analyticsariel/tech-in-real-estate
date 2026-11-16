@@ -12,6 +12,7 @@ This repo is where we publish those pieces so you can clone them and run them yo
 /skills/   Claude Code skills — drop-in workflows for investor-facing tasks.
 /agents/   Python pipelines — research, readings, pricing cuts, market briefs.
 /mcps/     MCP servers — live data access for your agent stack.
+/blog/     Code that goes with a post on the site, one folder per post.
 ```
 
 Each subfolder ships with its own README explaining the pattern and how to use the contents.
