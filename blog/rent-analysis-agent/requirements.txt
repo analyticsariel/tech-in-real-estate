@@ -1,0 +1,4 @@
+langchain==1.4.9
+langchain-anthropic==1.7.10
+pandas==3.0.2
+pytest==9.0.3
